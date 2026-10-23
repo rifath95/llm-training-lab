@@ -4,7 +4,9 @@ This note reconstructs the complete model forward pass in the local nanochat che
 
 The style follows your [Math Behind the Code](../transformer-from-scratch/MATH_BEHIND_THE_CODE.md). Comparisons refer to your checkout at `56092a1818027c800f08167ec0c1c65b983711e1`.
 
-The main source is [nanochat/nanochat/gpt.py](../nanochat/nanochat/gpt.py), especially `GPT.forward`, `Block.forward`, `CausalSelfAttention.forward`, `MLP.forward`, and `GPT.init_weights`. Attention mask semantics also come from [flash_attention.py](../nanochat/nanochat/flash_attention.py). Equations describe real arithmetic unless a numerical qualification is stated.
+The main source is [GPT.forward](../nanochat/nanochat/gpt.py#L459), together with [Block.forward](../nanochat/nanochat/gpt.py#L150), [CausalSelfAttention.forward](../nanochat/nanochat/gpt.py#L84), [MLP.forward](../nanochat/nanochat/gpt.py#L137), and [GPT.init_weights](../nanochat/nanochat/gpt.py#L204). Attention mask semantics also come from [_sdpa_attention](../nanochat/nanochat/flash_attention.py#L77). Equations describe real arithmetic unless a numerical qualification is stated.
+
+Code links include line fragments such as `gpt.py#L42` to open the relevant line in VS Code's Markdown preview. These line numbers refer to the source snapshot above and may need updating if the repositories change.
 
 **How to read the explanations:** an algebraic property follows from the equations; an architectural motivation is a plausible reason to choose an operation; an empirical choice is a setting whose effectiveness requires measurement. The code establishes the implemented function, but does not establish that every modification is universally beneficial.
 
@@ -61,7 +63,7 @@ L=12,\quad d=768,\quad H=H_{kv}=6,\quad D=128,\quad
 V=32768,\quad S=2048.
 $$
 
-These are the dataclass defaults, not necessarily the configuration selected by a run script. In [base_train.py](../nanochat/scripts/base_train.py), `build_model_meta` derives width and head counts from depth and explicitly sets $H_{kv}=H$. The implementation supports GQA, while that builder selects ordinary multi-head attention.
+These are the [GPTConfig dataclass defaults](../nanochat/nanochat/gpt.py#L29), not necessarily the configuration selected by a run script. In [build_model_meta](../nanochat/scripts/base_train.py#L129), the trainer derives width and head counts from depth and explicitly sets $H_{kv}=H$. The implementation supports GQA, while that builder selects ordinary multi-head attention.
 
 ## 2. The complete computational path
 
@@ -92,7 +94,7 @@ Position information enters through RoPE inside attention and through the ordere
 
 ## 3. RMS normalization
 
-**Code:** `norm` in [gpt.py](../nanochat/nanochat/gpt.py).
+**Code:** [norm — gpt.py, line 42](../nanochat/nanochat/gpt.py#L42). Compare with [your RMSNorm.forward](../transformer-from-scratch/model.py#L17).
 
 For a feature vector $u\in\mathbb R^n$, define
 
@@ -141,9 +143,25 @@ RMSNorm gives a comparatively simple way to control activation magnitude without
 
 Nanochat uses normalization after the input embedding, before each attention branch, before each MLP branch, on each query/key head, and before unembedding. It does not normalize values or apply a separate post-norm after every residual addition.
 
+### 3.3 Why omit learnable normalization scales?
+
+A learned coordinate scale can often be absorbed into the next projection. With the row-vector convention used here,
+
+$$
+\left(N_d(x)\odot\gamma\right)W^\top
+=N_d(x)\left(W\operatorname{diag}(\gamma)\right)^\top
+=N_d(x)\widetilde W^\top.
+$$
+
+Since $W$ is learned, this particular composition retains the same expressiveness without a separate $\gamma$. If several linear projections read the normalized vector, each can absorb the scaling. This is a local argument: it does not establish equivalence of the entire architecture. Separate scale parameters also change optimization and regularization, even when the represented functions are equivalent.
+
+For query/key normalization, omitting learned scales additionally preserves the controlled head magnitudes: after the fixed factor 1.2, each nonzero head has norm approximately $1.2\sqrt D$. A learned coordinate scale applied afterward could change both magnitude and directional weighting, weakening that constraint.
+
+These considerations motivate letting projections learn feature weighting while normalization controls magnitude. Whether omitting scales improves results remains an empirical question.
+
 ## 4. Token embeddings and vocabulary padding
 
-**Code:** `GPT.__init__` and the beginning of `GPT.forward` in [gpt.py](../nanochat/nanochat/gpt.py).
+**Code:** [vocabulary padding and embedding construction](../nanochat/nanochat/gpt.py#L170), [embedding lookup and normalization](../nanochat/nanochat/gpt.py#L470), and [Linear.forward](../nanochat/nanochat/gpt.py#L49).
 
 The learned token table is
 
@@ -168,7 +186,7 @@ Compared with your model, the new operation at this point is the embedding RMSNo
 
 ## 5. Embedding smear
 
-**Code:** the `# Smear` section of `GPT.forward`; parameters `smear_gate` and `smear_lambda`.
+**Code:** [smear forward computation](../nanochat/nanochat/gpt.py#L475) and [smear parameter definitions](../nanochat/nanochat/gpt.py#L184).
 
 Let
 
@@ -206,7 +224,7 @@ Initialization sets $\lambda_s=0$, so smear initially contributes zero. The exac
 
 ## 6. The residual stream and input reinjection
 
-**Code:** `GPT.forward`'s block loop and `Block.forward`.
+**Code:** [initial-stream reinjection and block loop](../nanochat/nanochat/gpt.py#L494) and [Block.forward](../nanochat/nanochat/gpt.py#L150).
 
 Each block has learned scalars
 
@@ -263,7 +281,7 @@ The scalars are shared over all batches, tokens, and channels within a layer. Th
 
 ## 7. Attention, from projections to output
 
-**Code:** `CausalSelfAttention.__init__`, `CausalSelfAttention.forward`, `has_ve`, `apply_rotary_emb`, and `GPT._compute_window_sizes` in [gpt.py](../nanochat/nanochat/gpt.py).
+**Code:** [CausalSelfAttention.__init__](../nanochat/nanochat/gpt.py#L68), [CausalSelfAttention.forward](../nanochat/nanochat/gpt.py#L84), [has_ve](../nanochat/nanochat/gpt.py#L53), [apply_rotary_emb](../nanochat/nanochat/gpt.py#L57), and [GPT._compute_window_sizes](../nanochat/nanochat/gpt.py#L287).
 
 For a fixed layer, let
 
@@ -274,6 +292,8 @@ $$
 All projections and the value gate below read this same normalized attention input.
 
 ### 7.1 Query, key, and value projections
+
+**Code:** [projection matrices](../nanochat/nanochat/gpt.py#L77) and [projection/reshape operations](../nanochat/nanochat/gpt.py#L89).
 
 The learned matrices are
 
@@ -299,6 +319,8 @@ $$
 Reshaping partitions the projected channel dimension into heads without changing values. Nanochat keeps the layout `(B, T, H, D)` for its Flash Attention interface; the SDPA fallback transposes to `(B, H, T, D)` internally.
 
 ### 7.2 Gated value embeddings
+
+**Code:** [layer selection](../nanochat/nanochat/gpt.py#L53), [value tables](../nanochat/nanochat/gpt.py#L189), and [gated value addition](../nanochat/nanochat/gpt.py#L93).
 
 Only layers satisfying
 
@@ -350,6 +372,8 @@ Values receive neither RoPE nor the query/key RMS normalization.
 
 ### 7.3 Rotary positional embeddings
 
+**Code:** [rotation of coordinate pairs](../nanochat/nanochat/gpt.py#L57), [frequency/table construction](../nanochat/nanochat/gpt.py#L270), and [position-offset slicing](../nanochat/nanochat/gpt.py#L466).
+
 The head dimension $D$ is even. Set $m=D/2$, and for $j=0,\ldots,m-1$ define
 
 $$
@@ -399,6 +423,8 @@ The model slices the relevant positions and broadcasts over batch and heads. The
 
 ### 7.4 QK normalization and attention scale
 
+**Code:** [RoPE, QK normalization, and factors of 1.2](../nanochat/nanochat/gpt.py#L99).
+
 Let $Q^R,K^R$ be the rotated projections. Nanochat computes
 
 $$
@@ -430,6 +456,8 @@ The usual variance argument also explains the retained $1/\sqrt D$: for independ
 
 ### 7.5 Which KV head does each query head use?
 
+**Code:** [head-count constraints](../nanochat/nanochat/gpt.py#L75) and [SDPA GQA dispatch](../nanochat/nanochat/flash_attention.py#L134).
+
 For query head $h\in\{0,\ldots,H-1\}$, define
 
 $$
@@ -442,6 +470,8 @@ Consecutive groups of $g$ query heads share one key head and one value head. Eac
 If $H_{kv}=H$, each query head uses a distinct KV head. If $H_{kv}=1$, all query heads share one KV head. Intermediate values give GQA. Sharing reduces KV projection width and cache storage by $H/H_{kv}$ relative to otherwise matching ordinary multi-head attention, while retaining $H$ query heads.
 
 ### 7.6 Causal and sliding-window masks
+
+**Code:** [per-layer window construction](../nanochat/nanochat/gpt.py#L287) and [SDPA causal/local masks](../nanochat/nanochat/flash_attention.py#L77).
 
 Let $w_\ell$ be the number of allowed preceding positions in this layer. For an uncached sequence, position $t$ may attend to
 
@@ -473,6 +503,8 @@ During a full pass of length $T\le S$, a long layer can see the entire available
 Local layers reduce attention work and emphasize nearby context. Interleaved long layers provide direct access across the configured context. Even several local layers can transmit information beyond one local window through successive representations. A BOS token does not create an attention barrier: these masks depend on positions and windows, not document or conversation boundaries.
 
 ### 7.7 Attention scores, softmax, and value aggregation
+
+**Code:** [model attention call](../nanochat/nanochat/gpt.py#L106) and [backend dispatch](../nanochat/nanochat/flash_attention.py#L115). The dot products, softmax, and weighted sum are executed inside the selected backend.
 
 For batch $b$, query position $t$, key position $s$, and query head $h$, define
 
@@ -513,6 +545,8 @@ Each head output is a convex combination of that KV head's values. This statemen
 
 ### 7.8 Concatenate heads and project back
 
+**Code:** [head concatenation and output projection](../nanochat/nanochat/gpt.py#L125).
+
 Concatenate the $H$ head outputs:
 
 $$
@@ -528,13 +562,15 @@ The block then adds this branch output to $r^{(\ell)}$. There is no attention dr
 
 ### 7.9 What Flash Attention changes
 
+**Code:** [Flash Attention/SDPA wrapper](../nanochat/nanochat/flash_attention.py#L115).
+
 The model calls either Flash Attention 3 or the SDPA fallback through the same wrapper. The intended mathematical operation is the masked scaled-dot-product attention just derived.
 
 Efficient kernels tile the computation and can avoid materializing the entire $B\times H\times T\times T$ score/probability tensors. Dense attention still has quadratic pairwise arithmetic. The equations describe a conceptual matrix even when the implementation never stores that matrix in full. Kernel choice can change roundoff and memory traffic; it does not add another learned attention mechanism.
 
 ## 8. The dense ReLU-squared MLP
 
-**Code:** `MLP.forward` and the second line of `Block.forward`.
+**Code:** [MLP projection definitions](../nanochat/nanochat/gpt.py#L131), [MLP.forward](../nanochat/nanochat/gpt.py#L137), and [MLP residual addition](../nanochat/nanochat/gpt.py#L152).
 
 After attention, normalize the updated stream:
 
@@ -601,7 +637,7 @@ followed by each expert's down projection and sparse routing/aggregation. Nanoch
 
 ## 9. Mid-layer backout and final normalization
 
-**Code:** `backout_layer`, `x_backout`, and `backout_lambda` in `GPT.forward`.
+**Code:** [saved-layer selection](../nanochat/nanochat/gpt.py#L497), [intermediate-stream capture](../nanochat/nanochat/gpt.py#L503), and [backout subtraction/final normalization](../nanochat/nanochat/gpt.py#L505).
 
 Define
 
@@ -634,7 +670,7 @@ Final normalization gives the classifier a controlled input norm. It does not bo
 
 ## 10. Unembedding, softcapping, and probabilities
 
-**Code:** the `lm_head` and final section of `GPT.forward`.
+**Code:** [independent lm_head construction](../nanochat/nanochat/gpt.py#L177) and [unembedding, cropping, fp32 conversion, and softcap](../nanochat/nanochat/gpt.py#L510).
 
 The output classifier has its own learned matrix
 
@@ -806,7 +842,7 @@ The implementation promotes logits to fp32 before applying the last tanh. This c
 
 ## 12. The cached forward pass
 
-**Code:** `GPT.forward`'s `kv_cache` branches, `CausalSelfAttention.forward`, [engine.py](../nanochat/nanochat/engine.py)'s `KVCache`, and [flash_attention.py](../nanochat/nanochat/flash_attention.py)'s `flash_attn_with_kvcache`.
+**Code:** [cached positions](../nanochat/nanochat/gpt.py#L466), [cached smear](../nanochat/nanochat/gpt.py#L481), [attention cache calls](../nanochat/nanochat/gpt.py#L112), [KVCache](../nanochat/nanochat/engine.py#L82), and [flash_attn_with_kvcache](../nanochat/nanochat/flash_attention.py#L139).
 
 Caching reuses results for past positions in the same causal model. It does not introduce learned parameters.
 
@@ -868,7 +904,7 @@ The actual rotary-buffer requirement is $p_0+T_{new}\le10S$, and the allocated K
 
 ## 13. Initialization and the initial function
 
-**Code:** `GPT.init_weights`. The usual construction path uses a meta device for shapes, allocates storage with `to_empty`, then calls this method. Constructor placeholders and the summary docstring do not always match the actual initialized values.
+**Code:** [GPT.init_weights](../nanochat/nanochat/gpt.py#L204) and [model allocation/initialization](../nanochat/scripts/base_train.py#L146). The usual construction path uses a meta device for shapes, allocates storage with `to_empty`, then calls this method. Constructor placeholders and the summary docstring do not always match the actual initialized values.
 
 Set
 
@@ -952,6 +988,8 @@ Your implementation instead initializes residual projections with a depth-scaled
 
 ### 14.1 Exact learned parameter count
 
+**Code:** [GPT.num_scaling_params](../nanochat/nanochat/gpt.py#L390).
+
 Let
 
 $$
@@ -1002,6 +1040,8 @@ The value tables dominate parameter count in this configuration even though they
 
 ### 14.2 Forward computation
 
+**Code:** [GPT.num_matmul_params](../nanochat/nanochat/gpt.py#L341) and [GPT.estimate_flops](../nanochat/nanochat/gpt.py#L319). The pair-count derivation below makes the causal mask and inclusive window boundary explicit.
+
 Ignoring elementwise operations, a block's linear projections require approximately
 
 $$
@@ -1036,6 +1076,8 @@ A materialized attention matrix needs $O(BHT^2)$ storage for full attention; eff
 
 ### 14.3 Cache storage
 
+**Code:** [KVCache allocation](../nanochat/nanochat/engine.py#L92) and [GPT.kv_bytes_per_token](../nanochat/nanochat/gpt.py#L374).
+
 For $T_{cache}$ stored positions and $b_{dtype}$ bytes per element, full allocated key/value storage for a batch is
 
 $$
@@ -1047,7 +1089,7 @@ The factor two accounts for K and V. The previous embedding adds $Bd\,b_{dtype}$
 
 ## 15. Comparison with your implementation
 
-Source: [your model.py](../transformer-from-scratch/model.py), especially `Multi_Headed_Latent_Attention`, `MLPexperts`, `MoE`, `Block`, and `MyGPT`.
+Source: your [Multi_Headed_Latent_Attention](../transformer-from-scratch/model.py#L27), [MLPexperts](../transformer-from-scratch/model.py#L144), [MoE](../transformer-from-scratch/model.py#L176), [Block.forward](../transformer-from-scratch/model.py#L250), and [MyGPT.forward](../transformer-from-scratch/model.py#L280).
 
 | Mechanism | Your implementation | This nanochat implementation |
 | --- | --- | --- |
