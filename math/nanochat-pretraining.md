@@ -2,6 +2,16 @@
 
 This note explains the complete execution of [scripts/base_train.py](../nanochat/scripts/base_train.py#L1): what is optimized, how the model and training budget are chosen, how a global batch produces an update, how hyperparameters evolve, and what evaluation and checkpoints mean.
 
+Start with the training loop you already implemented: take some text, predict the next tokens, compute a loss, call backward, and update the weights. Nanochat keeps that basic structure. The additional work is deciding how much text to process, splitting an update across GPUs and microbatches, choosing settings for different parameter groups, and measuring/saving the resulting model.
+
+Three questions organize the note:
+
+1. **What are we minimizing?** Sections 3–4 connect the model to the prediction task.
+2. **How much training should we do, and with what settings?** Sections 5–10 explain counts, budgets, batches, and hyperparameters.
+3. **What actually happens during a run?** Sections 11–16 follow updates, numerical execution, evaluation, logs, and checkpoints.
+
+The notation table below is a reference, not a prerequisite to memorize. Each calculation introduces the quantities it needs. In particular, **tokens per update**, **number of updates**, and **total training tokens** are separate quantities; many later formulas are just bookkeeping between them.
+
 The source snapshot is nanochat commit `92d63d4e8bb4df75c3b71618f31ddde2378b2bcd`. Exact line links refer to that checkout. Mathematical identities, approximate scaling arguments, empirical settings, and implementation discrepancies are identified separately.
 
 You can treat the [architecture note](nanochat-model-architecture.md) as defining the differentiable model and the [tokenization/data note](nanochat-tokenization-and-data.md) as defining its input distribution. This note connects them into a training process. The deeper matrix-optimizer derivation and communication implementation will belong in the optimization/distributed-training companion; precision kernels and hardware analysis will belong in the efficiency companion. Neither companion is required to follow the execution here.
@@ -30,7 +40,7 @@ You can treat the [architecture note](nanochat-model-architecture.md) as definin
 
 ## 1. What pretraining accomplishes
 
-Pretraining starts from newly initialized model weights and adjusts them to predict the next token in a large text corpus. For a token sequence beginning with BOS,
+Pretraining starts from newly initialized model weights and adjusts them to predict the next token in a large text corpus. Write $\theta$ for the collection of learned model parameters, and $p_\theta$ for the probabilities the model assigns. For a token sequence beginning with BOS,
 
 $$
 p_\theta(s_1,\ldots,s_T\mid\operatorname{BOS})
@@ -52,6 +62,10 @@ The meaning of “from scratch” concerns the model's initial weights. It does 
 
 ## 2. Notation and the execution map
 
+First distinguish three units of work. A **microbatch** is the group of sequences processed in one forward/backward pass on one GPU. A **training step** combines one or more microbatches, possibly across several GPUs, before one optimizer update. A **training run** performs many such steps.
+
+If one step processes $G$ tokens and the run performs $K$ steps, it processes $KG$ tokens in total. Section 7 explains how the microbatches add up to $G$.
+
 | Symbol | Meaning | Code name |
 | --- | --- | --- |
 | $L$ | Transformer depth | `args.depth` |
@@ -59,20 +73,24 @@ The meaning of “from scratch” concerns the model's initial weights. It does 
 | $d_h$ | Attention head dimension | `args.head_dim` |
 | $V$ | Actual tokenizer vocabulary size | `vocab_size` |
 | $T$ | Input positions per row | `args.max_seq_len` |
-| $b$ | Rows per local microbatch | `args.device_batch_size` |
-| $W$ | Number of distributed ranks | `ddp_world_size` |
-| $A$ | Accumulation microsteps per iteration | `grad_accum_steps` |
-| $G$ | Global target tokens per iteration | `total_batch_size` |
+| $b$ | Sequences in one local microbatch | `args.device_batch_size` |
+| $W$ | Number of training processes, usually one per GPU | `ddp_world_size` |
+| $A$ | Local microbatches accumulated before an optimizer update | `grad_accum_steps` |
+| $G$ | Tokens per optimizer step, across all processes and microbatches | `total_batch_size` |
 | $s$ | Completed iterations at loop entry | `step` |
-| $K$ | Planned total iterations | `num_iterations` |
+| $K$ | Number of training steps planned for the run | `num_iterations` |
 | $N_s$ | Parameters used for the scaling heuristic | `num_scaling_params` |
 | $N_{mat}$ | Parameters counted in token-stream matrix products | `num_matmul_params()` |
 | $P$ | Total learned parameters | `num_params` |
-| $D_*$ | Token horizon used by automatic scaling | `target_tokens` |
+| $D_*$ | Target training-token budget used by automatic scaling | `target_tokens` |
 | $D_{run}=KG$ | Planned processed target positions | `total_tokens` |
 | $\Phi$ | Estimated forward-plus-backward FLOPs per token | `num_flops_per_token` |
 
 Here capital $D$ refers to training tokens, not the head dimension called $D$ in the architecture note. We use $d_h$ for the latter. A “step” normally means one global update attempt, containing $A$ forward/backward microsteps. An epoch is a separate traversal of the data source and is not the same unit.
+
+The code calls each training process a **rank**. Its rank is an identifier such as 0, 1, or 2; $W$ counts how many processes there are. This distinction is explained with an example in section 7.
+
+The diagram is an execution map to consult while reading; its setup stages will be explained individually below.
 
 ```mermaid
 flowchart TD
@@ -102,7 +120,7 @@ The model is replicated across ranks. The optimizer handles distributed gradient
 
 ### 3.1 Inputs, targets, and teacher forcing
 
-For each packed row $r_0,\ldots,r_T$, the loader creates
+The training example is ordinary text shifted by one token: predict the token immediately after each input position. A row contains $T+1$ tokens so that it can supply $T$ input/target pairs. For each packed row $r_0,\ldots,r_T$, the loader creates
 
 $$
 X_{j,t}=r_t,\qquad Y_{j,t}=r_{t+1},
@@ -123,7 +141,9 @@ All $T$ positions can be computed in one forward pass. Although the full input a
 
 ### 3.2 Cross-entropy is negative conditional log likelihood
 
-Let $z_{j,t,v}$ be the raw linear-classifier output. Nanochat first computes
+For each position, we want a scalar penalty that is large when the model assigns little probability to the observed next token. Negative log probability does exactly that: assigning probability 0.5 costs about 0.693 nats, whereas assigning 0.01 costs about 4.605 nats.
+
+Let $z_{j,t,v}$ be the raw linear-classifier output for sequence $j$, position $t$, and candidate vocabulary token $v$. Nanochat first computes
 
 $$
 \bar z_{j,t,v}=15\tanh(z_{j,t,v}/15),\qquad
@@ -152,7 +172,7 @@ There is no MoE balancing term in nanochat's base objective. Weight decay is app
 
 ### 3.3 Why this objective learns the data distribution
 
-For a context $c$, let $q(v\mid c)$ denote the conditional target distribution induced by the training data. Then
+Why does predicting the observed token encourage learning a distribution rather than just increasing arbitrary scores? Consider a fixed context $c$. Let $q(v\mid c)$ be the data's distribution of continuations and $p_\theta(v\mid c)$ the model's prediction. The expected penalty separates into a fixed part and a distribution-mismatch part:
 
 $$
 \mathbb E_{v\sim q(\cdot\mid c)}[-\ln p_\theta(v\mid c)]
@@ -160,11 +180,11 @@ $$
 \operatorname{KL}\!\left(q(\cdot\mid c)\,\|\,p_\theta(\cdot\mid c)\right).
 $$
 
-The entropy term is independent of the model. Minimizing expected cross-entropy therefore minimizes this conditional KL divergence, subject to model capacity, available data, and optimization. This identity does not say that finite training finds the optimum, or that matching a text distribution guarantees truthfulness.
+Here $H(q)$ measures the uncertainty of the data's next token, and KL divergence measures how much the model distribution disagrees with it. The entropy term is independent of the model. Minimizing expected cross-entropy therefore minimizes this conditional KL divergence, subject to model capacity, available data, and optimization. This identity does not say that finite training finds the optimum, or that matching a text distribution guarantees truthfulness.
 
 ### 3.4 The signal passed into backpropagation
 
-For one microbatch,
+The loss is useful because it gives a derivative for every candidate token's score. For one microbatch containing $b$ sequences of $T$ targets each,
 
 $$
 \frac{\partial\mathcal L_{micro}}{\partial\bar z_{j,t,v}}
@@ -201,7 +221,7 @@ Token-level perplexity is $e^{\mathcal L}$. Equivalently, $e^{-\mathcal L}$ is t
 
 ### 4.1 The depth dial
 
-With aspect ratio $a$ and requested head dimension $d_h$, the builder sets
+The CLI lets you choose model size mainly through depth. The builder then chooses a matching width and number of heads, rather than requiring you to tune all three separately. With depth $L$, aspect ratio $a$ (the approximate width/depth ratio), and requested head dimension $d_h$, it sets
 
 $$
 d=d_h\left\lceil\frac{La}{d_h}\right\rceil,\qquad
@@ -222,7 +242,7 @@ Because width grows approximately linearly with depth, the dominant block matric
 
 ### 4.2 Why build on a meta device?
 
-The sequence is:
+Before training, we need both a description of the model's tensor shapes and actual storage for their numerical values. PyTorch's **meta device** provides just the first: tensors have shapes and dtypes but no stored elements. The sequence is:
 
 ```python
 model = build_model_meta(args.depth)
@@ -244,17 +264,36 @@ The code does not enable fully deterministic algorithms. Matching a seed is ther
 
 **Code:** [GPT.num_scaling_params](../nanochat/nanochat/gpt.py#L390), [get_scaling_params](../nanochat/scripts/base_train.py#L263), [GPT.num_matmul_params](../nanochat/nanochat/gpt.py#L341), and [GPT.estimate_flops](../nanochat/nanochat/gpt.py#L319).
 
-### 5.1 Total capacity versus the count used for scaling
+Before deciding how long to train, we need a measure of model size. There are three counts because we are asking three different questions:
 
-$P$ counts every learned parameter: the main embedding, unembedding, transformer matrices, value tables, and scalars.
+| Question | Count |
+| --- | --- |
+| How many learnable numbers does the model contain? | Total parameters $P$ |
+| Which measure of model size does nanochat use to choose a token budget? | Scaling count $N_s$ |
+| How many weights participate in the learned dense matrix products used to estimate compute? | Matrix-product count $N_{mat}$ |
 
-The horizon heuristic instead uses
+These are bookkeeping conventions for different purposes. They do not describe three different models.
+
+### 5.1 Actual parameter count versus the count used to choose a training budget
+
+**The actual count, $P$, includes every learned parameter.** It answers the usual question “How many parameters does this model have?” Here,
+
+$$
+P=P_{token\ embeddings}+P_{value\ embeddings}
++P_{transformer\ blocks}+P_{output\ head}+P_{other}.
+$$
+
+**The scaling count, $N_s$, is the number inserted into an empirical training-budget rule.** Section 6 will explain that rule: choose a target of approximately $\rho N_s$ training tokens, where $\rho$ is a tuned tokens-per-parameter ratio. Nanochat uses
 
 $$
 N_s=P_{transformer\ matrices}+P_{lm\ head}.
 $$
 
-It excludes the main token table, value-embedding tables, and global scalars/smear parameters. The transformer category includes the small per-head value-gate matrices. Nanochat's [scaling experiments](../nanochat/dev/LOG.md#L502) explain its empirical preference for this count.
+Thus $N_s$ leaves out the main token table, value-embedding tables, and global scalars/smear parameters. The source's `transformer_matrices` category includes all parameters inside the blocks, including the small per-head value-gate matrices.
+
+Why might that be useful? An embedding lookup selects one row of a table; a dense projection uses every weight of its matrix for each token. Adding value-embedding tables can therefore add many parameters with comparatively little extra matrix multiplication per token. Counting these parameters identically need not give the best predictor of an appropriate training budget.
+
+That is a motivation, not a proof of which count to use. Karpathy compared conventions experimentally and found that transformer-block parameters plus the output head gave cleaner scaling relationships in these [scaling experiments](../nanochat/dev/LOG.md#L502). **Every excluded parameter still participates in training.** Only its inclusion in the budget calculation changes. Also, total parameter count is not a precise mathematical measure of model capacity.
 
 For a d12 model with the reference vocabulary:
 
@@ -262,11 +301,11 @@ $$
 P=286,261,730,\qquad N_s=110,100,912.
 $$
 
-A run labelled “12 tokens per parameter” uses $12N_s$, not $12P$. Much of the difference comes from the large value tables, which add capacity through lookups with comparatively little token-stream matrix multiplication.
+A run labelled “12 tokens per parameter” therefore targets about $12\times110\text{M}=1.32$ billion tokens. Using $12P$ would instead give about 3.44 billion tokens. Much of the count difference comes from the large value tables. A quoted token/parameter ratio is meaningful only after specifying which parameter count is in the denominator.
 
 ### 5.2 The matrix-product count
 
-Before FP8 conversion, `num_matmul_params` sums weights of the custom `Linear` modules. That includes the global smear gate but excludes embedding lookups. For this architecture,
+Next we want to estimate computation. Count the weights actually used in the learned dense projections, because each is repeatedly involved in multiply/add operations. Before FP8 conversion, `num_matmul_params` implements this by summing weights of the custom `Linear` modules. That includes the global smear gate but excludes embedding lookups. For this architecture,
 
 $$
 N_{mat}=N_s+24
@@ -276,26 +315,37 @@ in the ordinary unconverted model. The additional 24 are the smear gate's input 
 
 ### 5.3 Where the factor six comes from
 
-For a matrix product $Y=XW^\top$, let $X$ have $n$ rows, input width $d_{in}$, and output width $d_{out}$. Its approximate costs are:
+The quantity we want is **total training arithmetic**. A common approximation for dense language models is
 
-- Forward: $2nd_{in}d_{out}$ FLOPs.
-- Input derivative: another $2nd_{in}d_{out}$.
-- Weight derivative: another $2nd_{in}d_{out}$.
+$$
+\boxed{C\approx6ND},
+$$
 
-Thus a trainable matrix contributes approximately six FLOPs per weight per token for forward plus backward. This is an accounting approximation that omits elementwise operations and some boundary cases, not an elapsed-time formula.
+where $C$ is floating-point operations (FLOPs), $N$ is an appropriate dense-weight parameter count, and $D$ is processed training tokens. The factor six means approximately **six operations per matrix weight per token, including forward and backward**. Here is its origin.
 
-The script's per-token estimate is
+Consider $Y=XM^\top$, where $X$ contains $n$ token vectors, the weight matrix $M$ has shape $(d_{out},d_{in})$, and $N_{matrix}=d_{in}d_{out}$. Given the output derivative $\Delta=\partial\mathcal L/\partial Y$:
+
+| Operation | Matrix expression | Approximate FLOPs |
+| --- | --- | --- |
+| Forward | $Y=XM^\top$ | $2nN_{matrix}$ |
+| Backward to inputs | $\partial\mathcal L/\partial X=\Delta M$ | $2nN_{matrix}$ |
+| Backward to weights | $\partial\mathcal L/\partial M=\Delta^\top X$ | $2nN_{matrix}$ |
+| Total | All three products | $6nN_{matrix}$ |
+
+Each factor of two counts one multiplication and one addition per dot-product contribution; exact operation counts differ slightly at boundaries. Summing over all learned projections and all training tokens gives $6N_{mat}D$. This is the connection to $C\approx6ND$; it is an arithmetic estimate, not a formula for elapsed seconds.
+
+Attention also performs products such as $QK^\top$ and $\operatorname{softmax}(QK^\top)V$. These multiply activations by activations, so their cost is missing from a count of learned projection weights. Nanochat adds an attention term to its **per-token** estimate:
 
 $$
 \Phi_{code}=6N_{mat}+
 12Hd_h\sum_{\ell=0}^{L-1}\min(T,w_\ell),
 $$
 
-where a negative window is treated as full $T$. The second term estimates query/key and probability/value products, including their backward passes. It does not materialize an attention matrix merely to count it.
+Here $\Phi_{code}$ means FLOPs per training token, $H$ is the number of query heads, $d_h$ is head dimension, and $w_\ell$ is layer $\ell$'s left attention window. A negative window is treated as full $T$, the sequence length. The second term estimates those attention products and their backward passes. Its factor 12 comes from two activation matrix products, each with a forward and two backward products at roughly two FLOPs per multiply/add contribution. The code does not materialize an attention matrix merely to count it.
 
 This attention term approximates the causal/window geometry; it does not exactly count the triangular ramp or the inclusive current-token boundary. The estimate also omits optimizer work, communication, tokenization, and evaluation. Floating-point precision and kernel efficiency affect time even when nominal matrix dimensions are unchanged.
 
-For a token horizon $D_{run}$,
+Finally multiply FLOPs/token by the number of processed tokens $D_{run}$:
 
 $$
 C_{train,estimate}=\Phi_{code}D_{run}.
@@ -309,15 +359,24 @@ $$
 
 ### 6.1 Compute-optimal does not mean train indefinitely
 
-With a fixed compute budget, model size and exposure compete. Increasing the model size leaves fewer tokens affordable; using a very small model allows more exposure but can limit capacity.
+Suppose you have a fixed compute budget. Should you train a large model on relatively little text, or a smaller model on more text? That is the allocation problem behind compute-optimal scaling. Increasing the model size leaves fewer tokens affordable; using a very small model allows more exposure but can limit capacity.
 
-A common empirical fit, used in compute-optimal scaling research such as [Chinchilla](https://arxiv.org/abs/2203.15556), is
+To express this mathematically, let $N$ be a chosen model-size measure and $D$ the number of training tokens. A common empirical fit, used in compute-optimal scaling research such as [Chinchilla](https://arxiv.org/abs/2203.15556), is
 
 $$
 \mathcal L(N,D)\approx\mathcal L_\infty+aN^{-\alpha}+bD^{-\beta}.
 $$
 
-Under the simplifying cost model $C=\kappa ND$, substitute $D=C/(\kappa N)$ and differentiate. At a stationary point,
+The two decreasing terms model improvements from more parameters and more data; $\mathcal L_\infty$ is a fitted limiting loss. The positive coefficients $a,b$ and exponents $\alpha,\beta$ come from experiments. They are unrelated to microbatch size $b$ or the model's residual coefficients.
+
+Under the simplifying cost model $C=\kappa ND$, with constant $\kappa$ (approximately 6 in the dense approximation), substitute $D=C/(\kappa N)$:
+
+$$
+\mathcal L(N\mid C)\approx\mathcal L_\infty
++aN^{-\alpha}+b(\kappa N/C)^\beta.
+$$
+
+The parameter-dependent term improves as $N$ increases, but the data-dependent term worsens because fewer tokens remain affordable. Differentiate with respect to $N$ and multiply the stationary equation by $N$. At a stationary point,
 
 $$
 \alpha aN^{-\alpha}=\beta bD^{-\beta}.
@@ -334,25 +393,39 @@ If the exponents are equal, both grow as $\sqrt C$, giving a constant optimal $D
 
 ### 6.2 Nanochat's practical horizon rule
 
-For the usual positive ratio setting $\rho$, the script sets
+Rather than fitting that loss surface for every run, nanochat uses a simple rule: **choose a tuned number of training tokens per scaling parameter**. Write that ratio as $\rho$ (“rho”). For scaling parameter count $N_s$, it sets
 
 $$
 D_*=\lfloor\rho N_s\rfloor.
 $$
 
-The CLI default is $\rho=12$; the current reference speedrun overrides it to 8. The latter is chosen for reaching the benchmark capability quickly, not as a universal optimum for base-model loss.
+Here $D_*$ is the desired number of processed training tokens; the floor just makes it an integer. At $N_s\approx110$ million and $\rho=12$, the target is approximately 1.32 billion tokens.
+
+**How is $\rho$ chosen?** Run several model sizes at a fixed compute budget, allocating each its affordable number of tokens. Fit or compare their validation losses, identify the best model/token allocation, and calculate $D/N_s$ there. Repeat across budgets. Karpathy's recorded experiments using this count gave ratios around 10–11 over the tested budgets. The CLI defaults to 12; these experiments motivate the range, but do not mathematically single out exactly 12. The current reference speedrun uses 8 to reach its benchmark goal quickly. These are empirical settings for particular objectives, not a limit beyond which more data stops helping.
 
 `D_*` counts runtime target positions, not unique documents, downloaded gigabytes, or an obligation to read all ClimbMix. Repeated corpus traversals can still count toward it.
 
 ### 6.3 Three ways to set the iteration count
 
-After determining $G$ and $\Phi$, the script chooses the first enabled option:
+We now need to turn a total budget into a number of optimizer steps. Keep these three quantities separate:
+
+| Quantity | Meaning | Units |
+| --- | --- | --- |
+| $G$ | Global batch: tokens processed for one optimizer step | Tokens/step |
+| $K$ | Number of training steps planned for the run | Steps |
+| $D_{run}=KG$ | Total processed tokens in that run | Tokens |
+
+“Global” means counting every GPU and every accumulated microbatch. Section 7 explains how those pieces add up. For now, if $G=1{,}000{,}000$ tokens/step and $K=1000$ steps, the run processes one billion tokens.
+
+The script supports three ways to choose $K$. It uses the first enabled option:
 
 | Priority | Argument | Iteration count |
 | --- | --- | --- |
 | 1 | `--num-iterations=K` | Explicit positive $K$ |
 | 2 | `--target-flops=C` | $K=\operatorname{round}(C/(\Phi G))$ |
 | 3 | `--target-param-data-ratio=rho` | $K=\lfloor D_*/G\rfloor$ |
+
+The FLOP-budget formula divides total available FLOPs $C$ by FLOPs per step $\Phi G$. The token-budget formula divides desired tokens $D_*$ by tokens per step $G$. Both are unit conversions from a budget into a step count.
 
 The actual planned token count is always
 
@@ -362,7 +435,9 @@ $$
 
 The ratio route rounds down to a whole global batch; the FLOP route rounds the number of iterations and may overshoot or undershoot the requested estimated budget. At least one full iteration is needed for an actual training update.
 
-An explicit iteration or FLOP horizon overrides $K$, but it does not cause the earlier automatic batch/decay heuristics to be recomputed from the resulting $D_{run}$. Those heuristics still use their ratio-based horizon proxy. Keep the proxy and actual budget distinct when changing flags.
+For a concrete rounding example, a target of 10.5 million tokens with $G=1$ million gives $K=10$, hence $D_{run}=10$ million. The code cannot process half of its configured global batch as a final partial step.
+
+An explicit iteration or FLOP budget overrides $K$, but it does not cause the earlier automatic batch/decay heuristics to be recomputed from the resulting $D_{run}$. Those heuristics still use the ratio-based estimate $D_*$. Thus $D_*$ is the budget used to suggest settings, while $D_{run}$ is what the resolved step count actually schedules.
 
 ### 6.4 Compute budget and wall-clock objective differ
 
@@ -376,16 +451,37 @@ The automatic rules provide a tuned starting configuration. They do not remove t
 
 ### 7.1 Count tokens, not just rows
 
-One rank's microbatch contains $bT$ prediction targets. One simultaneous forward/backward across $W$ ranks contains $WbT$. With $A$ accumulation rounds,
+The question here is: **how do several small forward/backward passes add up to one global optimizer step?** We split the work because the whole batch may not fit on one GPU at once.
+
+First define the process terminology. A **rank** is the identifier of one distributed training process, usually attached to one GPU. Four GPUs normally mean four processes with ranks 0, 1, 2, and 3. **$W=4$ is their count**, called the world size; $W$ is not itself a rank identifier. One-GPU training has rank 0 and $W=1$. Each rank holds a model copy and processes different local data.
+
+Next define the batch sizes:
+
+- $b$ is the number of sequences in **one local microbatch**.
+- $T$ is the number of prediction targets per sequence, so that microbatch has $bT$ targets.
+- $A$ is how many such microbatches **each rank** processes before the optimizer updates the weights.
+
+One accumulation round is one local microbatch per rank, giving $WbT$ targets across all ranks. After $A$ rounds, the global batch is
 
 $$
 \boxed{G=WAbT},\qquad
 A=\frac{G}{WbT}.
 $$
 
-The script asserts divisibility. It cannot simulate a fractional microstep.
+For example, with $W=2$ processes, $b=2$ sequences per microbatch, $T=4$ targets per sequence, and $A=3$ rounds:
 
-For $G=1,048,576$, $W=8$, $b=16$, and $T=2048$:
+| Accumulation round | Rank 0 | Rank 1 | Targets across both ranks |
+| --- | --- | --- | ---: |
+| First | 2 sequences × 4 targets | 2 different sequences × 4 targets | 16 |
+| Second | 2 more sequences × 4 targets | 2 more sequences × 4 targets | 16 |
+| Third | 2 more sequences × 4 targets | 2 more sequences × 4 targets | 16 |
+| Then update | Accumulated gradients are averaged across ranks | Same resulting model update | 48 total |
+
+Thus $G=2\times3\times2\times4=48$ targets per optimizer step. All those forward/backward passes use the same weights; the update comes after them.
+
+Given $G,W,b,T$, the script computes $A=G/(WbT)$ and asserts divisibility. It cannot simulate a fractional microstep.
+
+For a configuration closer to the reference run, take $G=1,048,576$, $W=8$, $b=16$, and $T=2048$:
 
 $$
 bT=32768,\qquad WbT=262144,\qquad A=4.
@@ -397,14 +493,32 @@ Keeping $G,b,T$ fixed while changing $W$ changes $A$. One GPU would use $A=32$ f
 
 ### 7.2 Why divide each loss by accumulation steps?
 
-Let $\mathcal L_{r,a}$ be the mean loss on microbatch $a$ of rank $r$, each containing $bT$ targets. The desired global objective is
+We want the update to use the **mean gradient over all $G$ targets**, despite computing them in pieces. Distinguish sizes from indices:
+
+| Symbol | Role | Small example: $b=2,A=3,W=2$ |
+| --- | --- | --- |
+| $b$ | Size of each local microbatch, in sequences | $b=2$ |
+| $A$ | Number of local microbatches before an update | $A=3$ |
+| $a$ | Index identifying one of those microbatches | $a=0,1,2$ |
+| $W$ | Number of processes | $W=2$ |
+| $r$ | Index identifying one process | $r=0,1$ |
+
+Thus $\mathcal L_{1,2}$ means “the mean loss of the third microbatch on rank 1.” It already averages over that microbatch's $bT$ targets. Because every microbatch has the same number of targets, the desired global loss is the mean of the $WA$ microbatch means:
 
 $$
 \mathcal L_{global}=\frac1{WA}\sum_{r=0}^{W-1}\sum_{a=0}^{A-1}
 \mathcal L_{r,a}.
 $$
 
-At fixed parameters, linearity of differentiation gives
+For the small example, that is
+
+$$
+\mathcal L_{global}=\frac16(
+\mathcal L_{0,0}+\mathcal L_{0,1}+\mathcal L_{0,2}
++\mathcal L_{1,0}+\mathcal L_{1,1}+\mathcal L_{1,2}).
+$$
+
+Every target receives weight $1/(WAbT)=1/G$. At fixed parameters, linearity of differentiation gives
 
 $$
 \nabla_\theta\mathcal L_{global}
@@ -444,106 +558,196 @@ Your model has an additional complication: MoE capacity decisions and its batch-
 
 **Code:** [reference and batch scaling](../nanochat/scripts/base_train.py#L271), [batch LR correction](../nanochat/scripts/base_train.py#L286), [weight-decay scaling](../nanochat/scripts/base_train.py#L296), and [width scaling](../nanochat/nanochat/gpt.py#L432).
 
-### 8.1 Reference configuration
+Suppose we have settings that work reasonably well for a small model, and now want to train a larger one. **How should we change the batch size, learning rates, and weight decay without retuning everything from the beginning?** That is the problem this section addresses.
 
-The script builds a shapes-only d12 reference using the current aspect ratio, vocabulary, head dimension, context length, and architecture. It uses
+These quantities are **hyperparameters**: choices controlling training, rather than weights learned by backward. The code starts from a reference configuration and applies scaling rules to suggest settings for the target run. Most of these rules are empirical; the decay rule also has an approximate mathematical motivation.
+
+The order is:
+
+```text
+reference model and target model
+    -> compare their token budgets
+    -> choose target global batch G
+    -> adjust learning-rate inputs for G
+    -> adjust selected learning rates for width d
+    -> adjust Muon's base weight-decay coefficient
+```
+
+This section chooses base settings. Section 9 assigns them to parameter groups; section 10 varies them over the course of training.
+
+### 8.1 What is the reference, and what does “horizon” mean?
+
+A **reference** is a baseline against which we express changes. The script builds a shapes-only depth-12 model using the current aspect ratio, vocabulary, head dimension, context length, and architecture. It does not train that model as part of setup; it only needs its parameter count $N_{s,ref}$.
+
+The reference has global batch and token budget
 
 $$
 G_{ref}=2^{19}=524288,\qquad
 D_{ref}=\rho N_{s,ref}.
 $$
 
-The reference batch is an empirical anchor. Building a new reference model does not automatically retune that anchor after arbitrary architecture or data changes.
+The target model has scaling parameter count $N_s$ and target budget $D_*=\rho N_s$. A subscript `ref` means “the reference value”; a ratio such as $D_*/D_{ref}$ tells us how many times larger the target budget is.
 
-### 8.2 Batch size grows with the horizon
+Here **training horizon** means the planned number of processed training tokens. It does not mean sequence length, model context, or one traversal of the dataset. We will use “token budget” below to keep that meaning explicit.
 
-The predicted global token batch is
+For the running arithmetic example, suppose the target has **four times the reference token budget and twice the reference width**. This is an illustrative choice of ratios, not a claim that every doubling of width produces exactly four times the budget.
+
+The reference batch of 524,288 tokens is an empirical anchor. Building a new shapes-only reference does not automatically retune that anchor after arbitrary architecture or data changes.
+
+### 8.2 Choose the global batch from the token-budget ratio
+
+A larger batch lets you process more tokens before synchronizing/updating, which can improve hardware utilization. But at a fixed token budget it also means fewer optimizer updates. The best batch balances useful gradient information, number of updates, and execution cost.
+
+Nanochat's rule is: **as the token budget grows, increase the global batch, but more slowly than the budget**. It predicts
 
 $$
 G_{pred}=G_{ref}\left(\frac{D_*}{D_{ref}}\right)^{0.383},
 $$
 
-then rounded to a nearby power of two:
+then rounds to a nearby power of two:
 
 $$
 G=2^{\operatorname{round}(\log_2G_{pred})}.
 $$
 
-An explicit `--total-batch-size` bypasses this prediction. The exponent comes from the batch-scaling work cited by the code: [Power Lines](https://arxiv.org/abs/2505.13738), which reports horizon-dependent empirical fits, including the 0.383 exponent for a tuned setting. It is not a theorem that every optimizer or corpus has that exponent.
+In our example,
+
+$$
+G_{pred}=G_{ref}\,4^{0.383}\approx1.70G_{ref},
+$$
+
+which rounds to $G=2G_{ref}=1{,}048{,}576$ tokens per step. Four times the token budget and twice the batch means approximately **twice as many optimizer steps**, since steps equal tokens divided by tokens/step.
+
+Why 0.383? It is a fitted exponent from the batch-scaling work cited by the source, [Power Lines](https://arxiv.org/abs/2505.13738), which reports this exponent for a tuned setting. It is not derived from the loss or a universal theorem about all corpora and optimizers. An explicit `--total-batch-size` bypasses the prediction.
 
 With the same positive $\rho$ for target and reference, $D_*/D_{ref}$ is approximately $N_s/N_{s,ref}$. The ratio cancels; changing $\rho$ alone therefore does not generally increase this script's automatic batch. Rounding can introduce small integer effects.
 
-For a fixed horizon, a larger $G$ means fewer updates. Smaller batches can offer more updates but more overhead; larger batches can improve parallel utilization while offering diminishing statistical benefit. Correlations between token gradients complicate simple independent-sample noise arguments. The best batch balances these effects for the measured objective.
+### 8.3 Adjust learning-rate inputs for the chosen batch
 
-### 8.3 Batch-dependent learning-rate correction
+The learning rate $\eta$ controls the scale of an optimizer's parameter update. Averaging more examples usually reduces gradient noise, which can permit larger updates. That motivates adjusting the learning rate when the global batch changes, although it does not establish a unique adjustment formula.
 
-Define
+Nanochat uses a square-root multiplier:
 
 $$
 c_G=\sqrt{G/G_{ref}}.
 $$
 
-Before constructing optimizer groups, the script multiplies the embedding, unembedding, scalar, and matrix LR arguments by $c_G$. Doubling the global batch consequently multiplies those inputs by $\sqrt2$.
+Here $c_G$ is a dimensionless correction factor, not a new learning rate. Before constructing optimizer groups, the script multiplies the embedding, unembedding, scalar, and matrix LR arguments by $c_G$.
+
+For our doubled global batch, $c_G=\sqrt2$. For example, a matrix LR argument of 0.02 becomes $0.02\sqrt2\approx0.0283$ before later scheduling and matrix-shape adjustments. The fixed smear/backout group has its own exception, shown in section 9.
 
 This square-root rule is a chosen transfer heuristic. In particular, the source explicitly says applying the same correction to Muon has not been studied carefully. It is not derived merely from the algebraic equivalence of gradient accumulation.
 
-### 8.4 Width-dependent learning-rate correction
+### 8.4 Separately adjust selected learning rates for model width
 
-Inside `GPT.setup_optimizer`, another factor is
+Changing width also changes the scale relationships inside the model; a learning rate tuned at width 768 need not transfer unchanged to width 1536. Inside `GPT.setup_optimizer`, nanochat applies another empirical correction:
 
 $$
 c_d=(d/768)^{-1/2}.
 $$
 
-This factor applies to the unembedding, main embedding, and value-table learning rates. Other groups have their own settings, shown in section 9.
+Here $d$ is hidden width and 768 is the default reference width. Wider models get a smaller multiplier. This factor applies to the unembedding, main embedding, and value-table learning rates. It is not applied to every parameter group.
+
+For our twice-as-wide target, $d=1536$ and $c_d=1/\sqrt2$. The batch and width factors therefore cancel for these groups:
+
+$$
+c_Gc_d=\sqrt2\,\frac1{\sqrt2}=1.
+$$
+
+For example, the main embedding's LR input of 0.3 becomes $0.3c_Gc_d=0.3$. The matrix LR keeps the batch correction without this width correction. Section 9 lists the complete group-specific formulas.
 
 The code calls its reference transfer “muP style.” The broader idea of transferring tuned hyperparameters between widths has a formal literature, including [Tensor Programs V](https://arxiv.org/abs/2203.03466). Nanochat's particular collection of exponents and group settings should still be treated as its empirically tuned parameterization, not as a proof that it implements every requirement of formal maximal-update parameterization.
 
-### 8.5 Deriving the base weight-decay scaling
+### 8.5 Adjust decay to account for its cumulative effect over the run
 
-For simple decoupled decay with a generic update direction $u_s$,
+Weight decay shrinks parameters during optimizer updates. Its effect depends on **how strongly we shrink at each step and how many steps we take**. Keeping the same coefficient while training for longer need not preserve the same total shrinkage.
 
-$$
-\theta_{s+1}=(1-\eta\lambda)\theta_s-\eta u_s.
-$$
-
-Unrolling this recurrence gives a contribution from each earlier update multiplied by powers of $(1-\eta\lambda)$. For small $\eta\lambda$,
+Let $\eta$ be learning rate and $\lambda$ the decay coefficient. First ignore the gradient update and hold both constant. Ordinary decoupled decay then gives
 
 $$
-(1-\eta\lambda)^n\approx e^{-n\eta\lambda},
-\qquad \tau_{steps}\approx\frac1{\eta\lambda}.
+\theta_{s+1}=(1-\eta\lambda)\theta_s.
 $$
 
-Relative to a horizon of $D/G$ steps, this timescale is
+After $K$ steps,
 
 $$
-\tau_{horizon}\approx\frac{G}{\eta\lambda D}.
+\theta_K=(1-\eta\lambda)^K\theta_0
+\approx e^{-\eta\lambda K}\theta_0,
 $$
 
-This is the timescale perspective behind the [AdamW scaling work](https://arxiv.org/abs/2405.13698) referenced by the source. Holding this normalized timescale constant between reference and target yields
+where the approximation assumes small $\eta\lambda$. Because $K=D/G$, the accumulated shrinkage is controlled by
 
 $$
-\frac{G}{\eta\lambda D}
-=\frac{G_{ref}}{\eta_{ref}\lambda_{ref}D_{ref}},
+\boxed{\eta\lambda\frac DG}.
 $$
+
+This gives an approximate transfer principle: **preserve that quantity when moving from reference to target**. Using a generic token budget $D$ for the target,
+
+$$
+\eta\lambda\frac DG
+=\eta_{ref}\lambda_{ref}\frac{D_{ref}}{G_{ref}}.
+$$
+
+Solve for the new decay coefficient:
 
 $$
 \lambda=\lambda_{ref}
-\frac{G}{G_{ref}}
+\frac G{G_{ref}}
 \frac{\eta_{ref}}\eta
 \frac{D_{ref}}D.
 $$
 
-Using $\eta/\eta_{ref}=\sqrt{G/G_{ref}}$ gives the code's base rule:
+Insert the square-root batch LR rule, $\eta/\eta_{ref}=\sqrt{G/G_{ref}}$, and use nanochat's budget estimate $D=D_*$:
 
 $$
 \boxed{\lambda_0=\lambda_{arg}\sqrt{G/G_{ref}}
 \frac{D_{ref}}{D_*}}.
 $$
 
-The script applies this to Muon's matrix decay. Its cautious, coordinate-dependent decay and varying LR/decay schedules do not exactly follow the simple scalar recurrence above. The transfer is therefore a motivation and heuristic, not an exact Muon invariance result. It also uses the ratio-based horizon proxy, not necessarily the explicitly overridden actual run horizon.
+Here $\lambda_{arg}$ is the CLI's reference decay input (default 0.28), while $\lambda_0$ is the resulting base coefficient for the target's Muon groups. In our example,
 
-Here “horizon” means the planned exposure used in the heuristic. It is not automatically one traversal of the entire downloaded corpus, even though the source comments call the normalized quantity an epoch timescale.
+$$
+\lambda_0=\lambda_{arg}\frac{\sqrt2}{4}
+\approx0.354\lambda_{arg}.
+$$
+
+Why smaller? There are about twice as many updates, and their base LR is $\sqrt2$ times larger. Reducing the decay coefficient compensates for both in this simplified accumulated-shrinkage calculation.
+
+To connect this with the timescale language in the [AdamW scaling work](https://arxiv.org/abs/2405.13698) cited by the source, now restore a generic optimizer update direction $u_s$:
+
+$$
+\theta_{s+1}=(1-\eta\lambda)\theta_s-\eta u_s.
+$$
+
+Unrolling this recurrence multiplies the remaining contribution of each earlier update by powers of $(1-\eta\lambda)$. Its decay timescale, measured in optimizer steps, is
+
+$$
+(1-\eta\lambda)^n\approx e^{-n\eta\lambda},
+\qquad \tau_{steps}\approx\frac1{\eta\lambda}.
+$$
+
+That is approximately how many steps it takes for a contribution to shrink by a factor $e^{-1}$. As a fraction of the run's $D/G$ steps,
+
+$$
+\tau_{horizon}\approx\frac{G}{\eta\lambda D}.
+$$
+
+Keeping this fraction constant is equivalent to keeping the accumulated-shrinkage quantity constant. The source calls it an epoch timescale, but the normalizing token budget here need not equal one traversal of the downloaded corpus.
+
+The actual script applies the transfer to Muon's matrix decay. Muon's cautious, coordinate-dependent decay and varying LR/decay schedules do not exactly follow the simple recurrence above. The derivation motivates the setting; it is not an exact invariance theorem for the real optimizer. It also uses $D_*$, not necessarily the actual budget $D_{run}$ after an explicit iteration/FLOP override.
+
+### 8.6 Put the adjustments together
+
+For the illustrative four-times-budget, twice-width example:
+
+| Setting | Change relative to reference | Reason for the rule |
+| --- | --- | --- |
+| Global token batch $G$ | Approximately $2\times$ after rounding | Empirical budget-to-batch fit |
+| LR inputs | $\sqrt2\times$ | Chosen batch-size transfer |
+| Embedding/value-table/output-head LR width factor | $1/\sqrt2$ | Chosen width transfer |
+| Muon base decay | Approximately $0.354\times$ | Approximate preservation of cumulative shrinkage |
+
+These are the base values we will now assign to parameter groups. A further schedule will change their effective values as training proceeds.
 
 ## 9. Which parameters use which optimizer settings
 
@@ -551,7 +755,19 @@ Here “horizon” means the planned exposure used in the heuristic. It is not a
 
 The optimizer is one object combining different update rules for different parameter groups. “Use Muon for matrices” does not mean every two-dimensional parameter uses Muon: embedding tables and unembedding are also matrices but are assigned AdamW.
 
-Let $\eta_e,\eta_u,\eta_m,\eta_s$ denote the CLI embedding, unembedding, matrix, and scalar LR arguments. The group base learning rates before the temporal schedule are:
+You can think of a **parameter group** as a list of tensors sharing an update rule and its settings. Your [configure_optimizers](../transformer-from-scratch/model.py#L300) already uses groups for decay choices; nanochat also uses them to assign different algorithms and learning rates to different parts of the model.
+
+To read the table, keep three stages separate. Start with a CLI learning-rate argument. Multiply by the batch and, where applicable, width corrections from section 8 to obtain a **group base LR**. Finally, section 10 multiplies that base LR by a function of training step. For example, the main embedding follows
+
+$$
+\underbrace{\eta_e}_{\text{CLI input}}
+\ \longrightarrow\
+\underbrace{\eta_e c_Gc_d}_{\text{group base LR}}
+\ \longrightarrow\
+\underbrace{\eta_e c_Gc_d f(s)}_{\text{LR at step }s}.
+$$
+
+Here $f(s)$ will be the common schedule multiplier. Let $\eta_e,\eta_u,\eta_m,\eta_s$ denote the CLI embedding, unembedding, matrix, and scalar LR arguments. The group base learning rates before that temporal schedule are:
 
 | Parameters | Rule | Base LR $\eta_g^0$ | Adam betas | Decay setting |
 | --- | --- | --- | --- | --- |
@@ -564,6 +780,8 @@ Let $\eta_e,\eta_u,\eta_m,\eta_s$ denote the CLI embedding, unembedding, matrix,
 | All parameters inside transformer blocks, including value gates | Muon | $\eta_m c_G$ | Separate Muon moment settings | Scheduled from $\lambda_0$ |
 
 The script defaults are $\eta_e=0.3$, $\eta_u=0.008$, $\eta_m=0.02$, $\eta_s=0.5$, and $\lambda_{arg}=0.28$. AdamW's epsilon is $10^{-10}$ in these groups. The value-gate projection inside each attention block is a Muon parameter, whereas the independently indexed value table is AdamW.
+
+The Adam betas specify how strongly its running averages retain earlier gradients and squared gradients; a beta closer to one gives a longer memory. Epsilon is a small denominator-stabilizing constant. The companion optimizer note will derive those recurrences. Here their role is to identify exactly which configuration each group receives. The symbols $\alpha_\ell,\beta_\ell$ in the parameter column are learned model coefficients, distinct from optimizer betas.
 
 Several consequences are easy to miss:
 
@@ -585,7 +803,7 @@ $$
 \eta_{eff}\left[u_i+\lambda\theta_i\mathbf1(u_i\theta_i\ge0)\right],
 $$
 
-where $u$ is its transformed update. This sign-dependent shrinkage is the “cautious” part. The derivation and matrix geometry will be examined in the optimizer companion.
+Here $u_i$ is coordinate $i$ of the transformed update, $\eta_{eff}$ is its effective LR including the shape multiplier, and the indicator is 1 when $u_i\theta_i\ge0$, otherwise 0. When the update points toward zero, decay adds shrinkage; when it points away from zero, this mask suppresses decay. This sign-dependent shrinkage is the “cautious” part. The derivation and matrix geometry will be examined in the optimizer companion.
 
 ### 9.2 Why use different groups?
 
@@ -595,9 +813,15 @@ Embedding lookups, the output classifier, residual coefficients, and hidden proj
 
 **Code:** [get_lr_multiplier](../nanochat/scripts/base_train.py#L360), [get_muon_momentum](../nanochat/scripts/base_train.py#L372), [get_weight_decay](../nanochat/scripts/base_train.py#L385), and [assignment before each update](../nanochat/scripts/base_train.py#L520).
 
+A base LR is a scale for the run, not a promise to take equally large updates throughout it. A **schedule** changes an optimizer setting according to training progress. Here progress is the step index $s=0,1,\ldots,K-1$, where $K$ is the planned number of training steps.
+
+Nanochat schedules three distinct quantities: the LR of every group, Muon's momentum, and Muon's decay coefficient. They have different curves and should not be conflated.
+
 ### 10.1 Common LR schedule
 
-Let $U$ be `warmup_steps`, $Q=\operatorname{round}(rK)$ the warmdown length, $r$ the configured warmdown fraction, and $f_{min}$ the final LR fraction. For ordinary nonoverlapping phases,
+In words, the LR **rises linearly during warmup, stays constant, then falls linearly during warmdown**. It is convenient to express that curve as a dimensionless multiplier $f(s)$ applied to every group's base LR.
+
+Let $U$ be the number of warmup steps (`warmup_steps`), $r$ the fraction of the run reserved for warmdown, $Q=\operatorname{round}(rK)$ that warmdown length in steps, and $f_{min}$ the final multiplier. For ordinary nonoverlapping phases,
 
 $$
 f(s)=
@@ -616,6 +840,8 @@ $$
 
 before any Muon matrix-shape multiplier. The defaults are $U=40$, $r=0.65$, and $f_{min}=0.05$.
 
+For example, a group with base LR 0.02 uses $0.02/40=0.0005$ on the first update. On the plateau it uses 0.02; near the end it approaches $0.02\times0.05=0.001$. The same multiplier gives a different numerical LR for a group whose base is 0.3.
+
 Warmup gradually activates the chosen update scale while optimizer state forms. The constant segment maintains that scale, and warmdown permits smaller final adjustments. Their best lengths are empirical. Unlike your cosine LR decay, nanochat uses a linear warmdown for the learning rate.
 
 For an illustrative $K=1000$, $U=40$, $Q=650$:
@@ -633,7 +859,9 @@ The optimizer actually runs at indices $0,\ldots,K-1$. At $s=K$ the loop evaluat
 
 ### 10.2 Muon momentum schedule
 
-Let $S_{down}=K-Q$. The source's actual branch order gives
+Momentum retains information about previous gradients when constructing the current update. The coefficient $\mu$ controls that retention; larger values give more persistence. Nanochat starts Muon's coefficient at 0.85, raises it toward 0.97, then lowers it toward 0.90 late in training.
+
+Let $S_{down}=K-Q$ be the step where warmdown begins. The source's actual branch order gives
 
 $$
 \mu(s)=
@@ -651,7 +879,7 @@ The order of conditions matters for short runs. If $S_{down}<400$, the first bra
 
 ### 10.3 Muon weight-decay schedule
 
-The coefficient is
+Section 8 chose a base decay coefficient $\lambda_0$ to account for the overall scale of the run. The schedule now gradually reduces it from that base toward zero. The coefficient at step $s$ is
 
 $$
 \lambda(s)=\frac{\lambda_0}{2}
@@ -672,11 +900,24 @@ The clean three-phase description assumes a suitable horizon. The actual functio
 
 Assume for now that FP16 loss scaling is unnecessary and no update is skipped. Let $\theta_s$ be the parameters after $s$ completed iterations.
 
+The previous sections chose the settings; this section follows one actual update using them. Keep one invariant in mind: weights remain at $\theta_s$ throughout all microbatch backward calls, and change to $\theta_{s+1}$ only at the optimizer step.
+
 ### 11.1 Evaluation and saving happen before the next update
 
 At loop entry, `step=s` and the current weights are $\theta_s$. The code checks whether this is the terminal pass, runs enabled evaluation/sampling/save operations when due, then exits if $s=K$.
 
 Thus a checkpoint at step 250 contains weights after 250 iterations, before update index 250. The loop visits step values $0,\ldots,K$ but performs only $K$ training iterations. The last visit exists to evaluate and save the final model, not to perform an extra update.
+
+For $K=3$, the ordering is:
+
+```text
+step 0: inspect theta_0 -> train/update -> theta_1
+step 1: inspect theta_1 -> train/update -> theta_2
+step 2: inspect theta_2 -> train/update -> theta_3
+step 3: final evaluation/save of theta_3 -> exit
+```
+
+“Inspect” means checking the evaluation/save conditions; it does not mean every check runs on every step.
 
 ### 11.2 Accumulate gradients
 
@@ -748,7 +989,9 @@ One step is not one token, one local forward, one complete dataset epoch, or one
 
 ### 12.1 Numerical representation versus the objective
 
-The likelihood equations specify a real-arithmetic function. Practical execution approximates it using floating-point representations and particular kernels.
+The likelihood equations specify a real-arithmetic function. A GPU must approximate it using finite-bit numbers. Lower-precision formats can save memory and make matrix multiplication faster, but also change rounding and the range of representable values. A **kernel** is the concrete device operation that carries out such a computation.
+
+Do not assume a single precision label applies to the whole training process: the stored weights, the numbers used in a forward matmul, and the optimizer's running state can use different formats. “Master weights” means the stored parameter values that the optimizer actually updates; a lower-precision copy or cast can be used for a matrix product.
 
 Nanochat manages its ordinary compute dtype explicitly through `COMPUTE_DTYPE`, rather than putting the whole forward under autocast as your training loop does. Its custom linear layers cast weights for the forward matrix products. Most linear master weights are fp32; embedding tables can be stored in the compute dtype. Logits and loss computation are promoted to fp32 along the model's readout path.
 
@@ -772,7 +1015,7 @@ Conversion preserves the parameter identities and matrix dimensions, while chang
 
 ### 12.4 FP16 loss scaling
 
-When `COMPUTE_DTYPE` is fp16, the script uses a scale $S_{loss}$:
+Some gradients may be too small to represent usefully in FP16 and can round to zero. Loss scaling tries to keep backward values in a usable range: multiply the loss by a positive scale, do backward, then divide the resulting gradients by the same scale before the optimizer. When `COMPUTE_DTYPE` is fp16, the script uses a scale $S_{loss}$:
 
 $$
 \nabla_\theta(S_{loss}\mathcal L)
@@ -791,6 +1034,8 @@ BF16/fp32 runs do not use this GradScaler branch. FP16 scaling details and numer
 
 ### 13.1 What the three checks measure
 
+Training loss tells us how well we predict the batches currently being optimized. We also need measurements on text held out from training, and tests of capabilities that matter to the eventual application. During these checks we measure the current weights without training on the evaluation examples.
+
 | Check | Question | Participating ranks |
 | --- | --- | --- |
 | Held-out BPB | How well does the model predict retained validation text per represented byte? | All ranks |
@@ -803,7 +1048,7 @@ Evaluation functions disable gradient recording where appropriate. Calling `.eva
 
 ### 13.2 Validation token accounting
 
-Each validation microbatch spans $WbT$ target positions globally. The number of validation iterations is
+Let $E_{requested}$ be the requested number of validation target tokens. Evaluation has no gradient-accumulation update: each forward across the ranks processes $WbT$ target positions. The number of validation iterations is therefore
 
 $$
 K_{eval}=\left\lfloor
@@ -813,7 +1058,7 @@ $$
 
 The loader is rebuilt for each evaluation, providing a consistent held-out starting region for a fixed setup. The actual target-position budget is $K_{eval}WbT$; the byte metric subsequently excludes special or ignored targets. Choosing a requested budget below one global validation batch yields zero iterations rather than a useful evaluation.
 
-BPB is
+**Bits per byte (BPB)** expresses prediction loss per represented text byte, rather than per tokenizer token. Divide total negative log probability by $\ln2$ to convert nats to bits, then divide by the number of bytes those ordinary target tokens represent:
 
 $$
 \operatorname{BPB}=
@@ -823,9 +1068,11 @@ $$
 
 The evaluator sums numerator and denominator across ranks before dividing. This weights the result by represented bytes rather than averaging rank-local ratios. Raw training loss and validation BPB have different units and target inclusion rules; their numerical magnitudes should not be compared directly.
 
+For example, a summed loss of $100\ln2$ nats over targets representing 200 bytes gives 100 bits/200 bytes, or 0.5 BPB. This is a normalization of prediction loss, not a measurement of how much GPU memory those tokens occupy.
+
 ### 13.3 CORE and baseline centering
 
-[evaluate_core](../nanochat/scripts/base_eval.py#L57) loads its evaluation bundle if needed, evaluates tasks, and aggregates their baseline-centered accuracies. For task accuracy $a_j$ and baseline probability $r_j$,
+[evaluate_core](../nanochat/scripts/base_eval.py#L57) loads its evaluation bundle if needed, evaluates tasks, and aggregates their baseline-centered accuracies. Baseline centering expresses progress from a task's reference accuracy toward perfect accuracy. For task $j$, let $a_j$ be measured accuracy and $r_j$ its baseline accuracy, both as fractions. Then
 
 $$
 c_j=\frac{a_j-r_j}{1-r_j},\qquad
@@ -833,6 +1080,8 @@ c_j=\frac{a_j-r_j}{1-r_j},\qquad
 $$
 
 The metadata expresses baseline percentages, so the source multiplies those values by 0.01 before using this formula. A score of zero corresponds to baseline accuracy, one to perfect accuracy; below-baseline performance can produce negative values. CORE is a mean across tasks, not an overall accuracy weighted by every task's example count.
+
+For a task with baseline $r_j=0.25$ and measured accuracy $a_j=0.625$, the normalized score is $(0.625-0.25)/(1-0.25)=0.5$: halfway from baseline to perfect. $J$ is the number of tasks included in the final mean.
 
 The task set comes from the bundle's `core.yaml`, and `max_per_task` controls subsampling. The task evaluator distributes examples across ranks. Detailed prompt construction and scoring belong in a later evaluation note.
 
@@ -860,7 +1109,7 @@ For local losses $[3,2]$, the accumulation contributes the mean gradient of both
 
 ### 14.2 EMA and its initial bias correction
 
-With $\beta=0.9$, the displayed statistic is based on
+A single microbatch loss is noisy, so the log smooths it with an **exponential moving average (EMA)**. Each new value receives some weight while older values retain geometrically decreasing weights. Let $\ell_s$ be the final-microbatch loss logged at update index $s$ and $m_s$ its running average. With $\beta=0.9$,
 
 $$
 m_s=\beta m_{s-1}+(1-\beta)\ell_s,\qquad m_{-1}=0,
@@ -872,9 +1121,11 @@ $$
 
 Unrolling gives $(1-\beta)\sum_{i=0}^{s}\beta^{s-i}\ell_i$. For a constant loss, its weights sum to $1-\beta^{s+1}$, explaining the correction. This smooths the logged final-microbatch losses, not the model's weights and not an independently measured full-batch average.
 
+For example, if the first logged loss is 4, the zero-initialized EMA becomes $m_0=0.1\times4=0.4$. Dividing by $1-0.9=0.1$ recovers 4 instead of misleadingly displaying 0.4. The same correction accounts for the missing initial history at later steps.
+
 ### 14.3 Throughput and MFU
 
-For timed iteration duration $\Delta t$,
+Throughput measures how much work completes per second. **Model FLOPs utilization (MFU)** compares estimated model arithmetic per second with the chosen theoretical peak across the GPUs. For timed iteration duration $\Delta t$,
 
 $$
 \operatorname{tokens/sec}=G/\Delta t,\qquad
@@ -907,7 +1158,7 @@ ETA extrapolates recent accumulated step timing and is approximate. The reported
 
 ### 15.1 What a resumable training state contains
 
-A useful conceptual state is
+Suppose training stops halfway through. Saving weights lets us run the current model, but continuing training also needs the optimizer's memory, the step index for schedules, and a position in the data stream. A useful conceptual state is
 
 $$
 \mathcal S_s=
@@ -931,6 +1182,8 @@ base_checkpoints/d24/
 ```
 
 Rank 0 saves the model state and JSON metadata. Every rank saves its own optimizer state because ownership is sharded. The metadata includes model configuration, user arguments, resolved batch/context settings, step, latest validation BPB, data-loader state, and running log statistics.
+
+“Sharded” means each rank owns only part of the full optimizer state. Model weights are replicated across ranks after an update, but all the optimizer's moment tensors need not be. That is why one rank's model file is sufficient for the weights, while resuming the distributed optimizer needs the per-rank optimizer files.
 
 Saving `orig_model.state_dict()` avoids compile-wrapper prefixes. Deterministic rotary buffers marked nonpersistent are reconstructed rather than saved. The tokenizer and its byte-count table remain separate files and must stay compatible with the checkpoint's ID semantics.
 
@@ -959,7 +1212,9 @@ The model has no dropout and the data ordering is largely deterministic, so some
 
 **Code:** [the reference pretraining invocation](../nanochat/runs/speedrun.sh#L67) and the builder/scaling functions linked above.
 
-Consider the architecture and token horizon selected by the current speedrun:
+We can now assemble the earlier calculations into one real configuration. Read this section as a chain: architecture determines parameter counts; those counts give a target token budget; the budget suggests a batch; the batch gives an update count and accumulation count; the chosen scales give group hyperparameters.
+
+Consider the architecture and token budget selected by the current speedrun:
 
 $$
 L=24,\quad d=1536,\quad H=H_{kv}=12,\quad d_h=128,
@@ -988,7 +1243,16 @@ The real speedrun enables FP8. First calculate the ordinary model's parameter an
 | Global targets per accumulation round $WbT$ | 262,144 |
 | Accumulation rounds $A$ | 4 |
 
-The rounding loses only 13,824 target positions relative to $D_*$ in this example. The “8 tokens per parameter” label refers to $N_s$, whereas dividing by all 1.384B parameters gives a different ratio. Neither ratio is the corpus's total available token count.
+To see where the table comes from, the two central calculations are
+
+$$
+K=\left\lfloor\frac{5{,}838{,}484{,}992}{1{,}048{,}576}\right\rfloor
+=5568\text{ steps},
+\qquad
+A=\frac{1{,}048{,}576}{8\times16\times2048}=4.
+$$
+
+Each of the eight GPUs processes four local microbatches, then the optimizer updates once; this repeats for 5568 steps. The rounding loses only 13,824 target positions relative to $D_*$. The “8 tokens per parameter” label refers to $N_s$, whereas dividing by all 1.384B parameters gives a different ratio. Neither ratio is the corpus's total available token count.
 
 ### 16.2 Hyperparameters
 
