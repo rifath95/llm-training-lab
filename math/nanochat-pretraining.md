@@ -43,9 +43,9 @@ You can treat the [architecture note](nanochat-model-architecture.md) as definin
 Pretraining starts from newly initialized model weights and adjusts them to predict the next token in a large text corpus. Write $\theta$ for the collection of learned model parameters, and $p_\theta$ for the probabilities the model assigns. For a token sequence beginning with BOS,
 
 $$
-p_\theta(s_1,\ldots,s_T\mid\operatorname{BOS})
+p_\theta(s_1,\ldots,s_T\mid\mathrm{BOS})
 =\prod_{t=0}^{T-1}
-p_\theta(s_{t+1}\mid\operatorname{BOS},s_1,\ldots,s_t).
+p_\theta(s_{t+1}\mid\mathrm{BOS},s_1,\ldots,s_t).
 $$
 
 This factorization is the probability chain rule with a causal model supplying the conditional distributions. In practice, context is bounded by sequence construction and the model's attention pattern.
@@ -177,7 +177,7 @@ Why does predicting the observed token encourage learning a distribution rather 
 $$
 \mathbb E_{v\sim q(\cdot\mid c)}[-\ln p_\theta(v\mid c)]
 =H(q(\cdot\mid c))+
-\operatorname{KL}\!\left(q(\cdot\mid c)\,\|\,p_\theta(\cdot\mid c)\right).
+\mathrm{KL}\!\left(q(\cdot\mid c)\,\|\,p_\theta(\cdot\mid c)\right).
 $$
 
 Here $H(q)$ measures the uncertainty of the data's next token, and KL divergence measures how much the model distribution disagrees with it. The entropy term is independent of the model. Minimizing expected cross-entropy therefore minimizes this conditional KL divergence, subject to model capacity, available data, and optimization. This identity does not say that finite training finds the optimum, or that matching a text distribution guarantees truthfulness.
@@ -196,7 +196,7 @@ After the softcap chain rule,
 $$
 \frac{\partial\mathcal L_{micro}}{\partial z_{j,t,v}}
 =\frac{p_{j,t,v}-\mathbf1[v=Y_{j,t}]}{bT}
-\operatorname{sech}^2(z_{j,t,v}/15).
+\mathrm{sech}^2(z_{j,t,v}/15).
 $$
 
 The correct class has a negative logit derivative unless its probability is already one; other classes have positive derivatives. Gradient descent acts through the entire network to improve the target's relative score. Saturated raw logits receive an attenuated derivative through the softcap.
@@ -334,7 +334,7 @@ Consider $Y=XM^\top$, where $X$ contains $n$ token vectors, the weight matrix $M
 
 Each factor of two counts one multiplication and one addition per dot-product contribution; exact operation counts differ slightly at boundaries. Summing over all learned projections and all training tokens gives $6N_{mat}D$. This is the connection to $C\approx6ND$; it is an arithmetic estimate, not a formula for elapsed seconds.
 
-Attention also performs products such as $QK^\top$ and $\operatorname{softmax}(QK^\top)V$. These multiply activations by activations, so their cost is missing from a count of learned projection weights. Nanochat adds an attention term to its **per-token** estimate:
+Attention also performs products such as $QK^\top$ and $\mathrm{softmax}(QK^\top)V$. These multiply activations by activations, so their cost is missing from a count of learned projection weights. Nanochat adds an attention term to its **per-token** estimate:
 
 $$
 \Phi_{code}=6N_{mat}+
@@ -422,7 +422,7 @@ The script supports three ways to choose $K$. It uses the first enabled option:
 | Priority | Argument | Iteration count |
 | --- | --- | --- |
 | 1 | `--num-iterations=K` | Explicit positive $K$ |
-| 2 | `--target-flops=C` | $K=\operatorname{round}(C/(\Phi G))$ |
+| 2 | `--target-flops=C` | $K=\mathrm{round}(C/(\Phi G))$ |
 | 3 | `--target-param-data-ratio=rho` | $K=\lfloor D_*/G\rfloor$ |
 
 The FLOP-budget formula divides total available FLOPs $C$ by FLOPs per step $\Phi G$. The token-budget formula divides desired tokens $D_*$ by tokens per step $G$. Both are unit conversions from a budget into a step count.
@@ -607,7 +607,7 @@ $$
 then rounds to a nearby power of two:
 
 $$
-G=2^{\operatorname{round}(\log_2G_{pred})}.
+G=2^{\mathrm{round}(\log_2G_{pred})}.
 $$
 
 In our example,
@@ -821,7 +821,7 @@ Nanochat schedules three distinct quantities: the LR of every group, Muon's mome
 
 In words, the LR **rises linearly during warmup, stays constant, then falls linearly during warmdown**. It is convenient to express that curve as a dimensionless multiplier $f(s)$ applied to every group's base LR.
 
-Let $U$ be the number of warmup steps (`warmup_steps`), $r$ the fraction of the run reserved for warmdown, $Q=\operatorname{round}(rK)$ that warmdown length in steps, and $f_{min}$ the final multiplier. For ordinary nonoverlapping phases,
+Let $U$ be the number of warmup steps (`warmup_steps`), $r$ the fraction of the run reserved for warmdown, $Q=\mathrm{round}(rK)$ that warmdown length in steps, and $f_{min}$ the final multiplier. For ordinary nonoverlapping phases,
 
 $$
 f(s)=
@@ -1061,7 +1061,7 @@ The loader is rebuilt for each evaluation, providing a consistent held-out start
 **Bits per byte (BPB)** expresses prediction loss per represented text byte, rather than per tokenizer token. Divide total negative log probability by $\ln2$ to convert nats to bits, then divide by the number of bytes those ordinary target tokens represent:
 
 $$
-\operatorname{BPB}=
+\mathrm{BPB}=
 \frac{\text{sum ordinary-target negative log probabilities}}
 {\ln2\times\text{sum represented target bytes}}.
 $$
@@ -1076,7 +1076,7 @@ For example, a summed loss of $100\ln2$ nats over targets representing 200 bytes
 
 $$
 c_j=\frac{a_j-r_j}{1-r_j},\qquad
-\operatorname{CORE}=\frac1J\sum_{j=1}^Jc_j.
+\mathrm{CORE}=\frac1J\sum_{j=1}^Jc_j.
 $$
 
 The metadata expresses baseline percentages, so the source multiplies those values by 0.01 before using this formula. A score of zero corresponds to baseline accuracy, one to perfect accuracy; below-baseline performance can produce negative values. CORE is a mean across tasks, not an overall accuracy weighted by every task's example count.
@@ -1128,14 +1128,14 @@ For example, if the first logged loss is 4, the zero-initialized EMA becomes $m_
 Throughput measures how much work completes per second. **Model FLOPs utilization (MFU)** compares estimated model arithmetic per second with the chosen theoretical peak across the GPUs. For timed iteration duration $\Delta t$,
 
 $$
-\operatorname{tokens/sec}=G/\Delta t,\qquad
-\operatorname{estimated\ FLOPs/sec}=\Phi G/\Delta t,
+\mathrm{tokens/sec}=G/\Delta t,\qquad
+\mathrm{estimated\ FLOPs/sec}=\Phi G/\Delta t,
 $$
 
 $$
-\operatorname{MFU}(\%)=
+\mathrm{MFU}(\%)=
 100\frac{\Phi G/\Delta t}
-{W\times\operatorname{GPU\ peak\ BF16\ FLOPs/sec}}.
+{W\times\mathrm{GPU\ peak\ BF16\ FLOPs/sec}}.
 $$
 
 This is an estimate of model arithmetic throughput relative to a selected peak. It is not a direct measurement of active GPU cycles, memory-bandwidth utilization, or every operation performed by the program. It depends on the FLOP count being meaningful. An FP8 run also uses the BF16 peak as its reference denominator, so interpretation differs from an FP8-peak hardware utilization ratio.
@@ -1282,7 +1282,7 @@ $$
 \approx0.0597384.
 $$
 
-At the first update all group LRs receive the warmup multiplier $1/40$. The warmdown length is $\operatorname{round}(0.65\cdot5568)=3619$, starting from the plateau boundary at index 1949.
+At the first update all group LRs receive the warmup multiplier $1/40$. The warmdown length is $\mathrm{round}(0.65\cdot5568)=3619$, starting from the plateau boundary at index 1949.
 
 These are different settings for different parameter roles. A single printed scalar such as `lrm` is the common multiplier, not the complete effective LR of every parameter.
 

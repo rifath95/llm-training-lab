@@ -149,7 +149,7 @@ A learned coordinate scale can often be absorbed into the next projection. With 
 
 $$
 \left(N_d(x)\odot\gamma\right)W^\top
-=N_d(x)\left(W\operatorname{diag}(\gamma)\right)^\top
+=N_d(x)\left(W\mathrm{diag}(\gamma)\right)^\top
 =N_d(x)\widetilde W^\top.
 $$
 
@@ -306,13 +306,13 @@ $$
 Compute and reshape:
 
 $$
-Q^0=\operatorname{reshape}(UW_Q^\top)
+Q^0=\mathrm{reshape}(UW_Q^\top)
 \in\mathbb R^{B\times T\times H\times D},
 $$
 
 $$
-K^0=\operatorname{reshape}(UW_K^\top),\qquad
-V^0=\operatorname{reshape}(UW_V^\top)
+K^0=\mathrm{reshape}(UW_K^\top),\qquad
+V^0=\mathrm{reshape}(UW_V^\top)
 \in\mathbb R^{B\times T\times H_{kv}\times D}.
 $$
 
@@ -345,7 +345,7 @@ $$
 Look up the original token ID and reshape:
 
 $$
-Z_{b,t,:,:}=\operatorname{reshape}
+Z_{b,t,:,:}=\mathrm{reshape}
 \left(E^{VE}_\ell[X_{b,t},:]\right)
 \in\mathbb R^{H_{kv}\times D}.
 $$
@@ -452,7 +452,7 @@ Without QK normalization, increasing projection norms can arbitrarily increase a
 
 Orthogonal rotations preserve norms, so RoPE and this parameter-free RMSNorm commute in exact arithmetic. Their implemented order is rotation, normalization, scaling. Finite-precision paths need not be bitwise identical under reordering.
 
-The usual variance argument also explains the retained $1/\sqrt D$: for independent, zero-mean, unit-variance coordinates, $\operatorname{Var}(q^\top k)\approx D$. Dividing by $\sqrt D$ gives order-one variance. For independent isotropic normalized directions, cosine fluctuations are similarly of order $D^{-1/2}$. These are scale heuristics, not independence assumptions guaranteed for learned heads.
+The usual variance argument also explains the retained $1/\sqrt D$: for independent, zero-mean, unit-variance coordinates, $\mathrm{Var}(q^\top k)\approx D$. Dividing by $\sqrt D$ gives order-one variance. For independent isotropic normalized directions, cosine fluctuations are similarly of order $D^{-1/2}$. These are scale heuristics, not independence assumptions guaranteed for learned heads.
 
 ### 7.5 Which KV head does each query head use?
 
@@ -630,7 +630,7 @@ Your `MLPexperts` instead computes SwiGLU-like experts,
 
 $$
 \left(FW_{up}^\top\right)\odot
-\operatorname{SiLU}\left(FW_{gate}^\top\right),
+\mathrm{SiLU}\left(FW_{gate}^\top\right),
 $$
 
 followed by each expert's down projection and sparse routing/aggregation. Nanochat has no separate activation gate projection, no experts, no router, and no capacity mechanism. ReLU-squared is a simpler dense alternative; its inclusion does not establish that it is generally superior to SwiGLU.
@@ -688,7 +688,7 @@ $$
 Crop to the actual vocabulary and convert to fp32:
 
 $$
-Z_{b,t,:}=\operatorname{float32}
+Z_{b,t,:}=\mathrm{float32}
 \left(Z^{pad}_{b,t,0:V}\right).
 $$
 
@@ -722,7 +722,7 @@ Final RMSNorm controls $\|u\|_2$, but the learned row norm $\|w_v\|_2$ can grow.
 $$
 |\bar Z_v|<15,
 \qquad
-\frac{d\bar Z_v}{dZ_v}=\operatorname{sech}^2(Z_v/15).
+\frac{d\bar Z_v}{dZ_v}=\mathrm{sech}^2(Z_v/15).
 $$
 
 For $|Z_v|\ll15$, the transformation is approximately the identity. Large magnitudes saturate smoothly and have smaller derivatives. This can limit extreme confidence and large logit magnitudes, but can also attenuate signals in the saturated regime. The cap 15 is empirical.
@@ -773,9 +773,9 @@ $$
 Project $U_t$ into heads:
 
 $$
-Q^0_t=\operatorname{reshape}(U_tW_{Q,\ell}^\top),\quad
-K^0_t=\operatorname{reshape}(U_tW_{K,\ell}^\top),\quad
-V^0_t=\operatorname{reshape}(U_tW_{V,\ell}^\top).
+Q^0_t=\mathrm{reshape}(U_tW_{Q,\ell}^\top),\quad
+K^0_t=\mathrm{reshape}(U_tW_{K,\ell}^\top),\quad
+V^0_t=\mathrm{reshape}(U_tW_{V,\ell}^\top).
 $$
 
 Use the value table if present:
@@ -784,7 +784,7 @@ $$
 V_{t,k}=
 \begin{cases}
 V^0_{t,k}+3\sigma((U_{t,0:12}W_{G,\ell}^\top)_k)
-\operatorname{reshape}(E^{VE}_\ell[X_t])_k,
+\mathrm{reshape}(E^{VE}_\ell[X_t])_k,
 &\ell\bmod2=(L-1)\bmod2,\\
 V^0_{t,k},&\text{otherwise}.
 \end{cases}
@@ -800,7 +800,7 @@ $$
 Compute attention over the allowed keys:
 
 $$
-P_{h,t,s}=\operatorname{softmax}_{s\in\mathcal J_\ell(t)}
+P_{h,t,s}=\mathrm{softmax}_{s\in\mathcal J_\ell(t)}
 \left(\frac{\widehat Q_{t,h}^\top
 \widehat K_{s,\kappa(h)}}{\sqrt D}\right),
 \qquad
@@ -811,12 +811,12 @@ Update both residual branches:
 
 $$
 a^{(\ell)}_t=r^{(\ell)}_t+
-\operatorname{concat}_{h=0}^{H-1}(Y_{t,h})W_{O,\ell}^\top,
+\mathrm{concat}_{h=0}^{H-1}(Y_{t,h})W_{O,\ell}^\top,
 $$
 
 $$
 h^{(\ell+1)}_t=a^{(\ell)}_t+
-\left[\operatorname{ReLU}
+\left[\mathrm{ReLU}
 \left(N_d(a^{(\ell)}_t)W_{up,\ell}^\top\right)\right]^2
 W_{down,\ell}^\top.
 $$
@@ -835,7 +835,7 @@ $$
 \bar Z_t=15\tanh\!\left(
 \frac{(u_tW_U^\top)_{0:V}}{15}
 \right),\qquad
-p_t=\operatorname{softmax}_{v}(\bar Z_t).
+p_t=\mathrm{softmax}_{v}(\bar Z_t).
 $$
 
 The implementation promotes logits to fp32 before applying the last tanh. This completes the map from token IDs to next-token probabilities.
@@ -934,7 +934,7 @@ For $L>1$, the residual coefficient decreases from 1.15 to 1.05 and the input co
 For a uniform random variable on $[-a,a]$,
 
 $$
-\operatorname{Var}(W)=a^2/3.
+\mathrm{Var}(W)=a^2/3.
 $$
 
 Thus Q/K/V projection entries have standard deviation $1/\sqrt d$, and MLP-up entries have standard deviation $0.4/\sqrt d$. For approximately independent normalized input coordinates, a Q/K/V preactivation has variance approximately $d(1/d)=1$. This is the fan-in scale argument; the factor 0.4 further reduces MLP preactivation scale before squaring.
@@ -977,7 +977,7 @@ Zeroing only the final projection allows that projection to receive a signal fro
 Under the independent small-weight approximation, the initial output logit standard deviation is
 
 $$
-\operatorname{std}(Z_v)\approx0.001\sqrt d,
+\mathrm{std}(Z_v)\approx0.001\sqrt d,
 $$
 
 about 0.0277 for $d=768$. Initial output probabilities are consequently close to uniform rather than exactly uniform.
@@ -1081,7 +1081,7 @@ A materialized attention matrix needs $O(BHT^2)$ storage for full attention; eff
 For $T_{cache}$ stored positions and $b_{dtype}$ bytes per element, full allocated key/value storage for a batch is
 
 $$
-\operatorname{bytes}_{KV}=
+\mathrm{bytes}_{KV}=
 2LBT_{cache}H_{kv}D\,b_{dtype}.
 $$
 

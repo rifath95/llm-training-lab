@@ -220,7 +220,7 @@ Your [character tokenizer](../transformer-from-scratch/data.py#L9) instead build
 Each ordinary token ID maps to a byte string. Decoding concatenates those byte strings and interprets the resulting UTF-8 stream. For valid text encoded by the tokenizer, the desired invariant is
 
 $$
-\operatorname{decode}(\operatorname{encode}(text))=text.
+\mathrm{decode}(\mathrm{encode}(text))=text.
 $$
 
 A single token's bytes need not be valid UTF-8 by themselves. For example, the two bytes of `é` can be separate tokens. Inspecting each token by decoding it to a standalone string can insert replacement characters and misrepresent byte lengths. Nanochat explicitly uses [decode_single_token_bytes](../nanochat/nanochat/tokenizer.py#L129) when constructing its evaluation byte counts.
@@ -287,8 +287,8 @@ Identical chunks can be counted once with a frequency weight. This is an efficie
 Choose a highest-frequency available pair $(a^*,b^*)$, allocate a new ID $m$, and assign it the concatenated bytes
 
 $$
-\operatorname{bytes}(m)=
-\operatorname{bytes}(a^*)\Vert\operatorname{bytes}(b^*).
+\mathrm{bytes}(m)=
+\mathrm{bytes}(a^*)\Vert\mathrm{bytes}(b^*).
 $$
 
 Replace its non-overlapping occurrences, update the counts of affected neighboring pairs, and repeat. Old tokens remain in the vocabulary. Ties follow the implementation's tie-breaking rule; different choices can produce different later merges.
@@ -482,7 +482,7 @@ A token can cover one byte or many. Changing segmentation changes the unit being
 Nanochat uses [evaluate_bpb](../nanochat/nanochat/loss_eval.py#L9), which accumulates negative log probabilities and byte lengths over ordinary, unmasked target tokens. Let $\mathcal I$ be those positions and $b(y_i)$ the raw byte length of target token $y_i$. Then
 
 $$
-\operatorname{BPB}=
+\mathrm{BPB}=
 \frac{\sum_{i\in\mathcal I}-\ln p_\theta(y_i\mid x_{\le i})}
 {\ln2\;\sum_{i\in\mathcal I}b(y_i)}.
 $$
@@ -492,7 +492,7 @@ The numerator is in nats; dividing by $\ln2$ converts it to bits. BOS and other 
 If ordinary-token mean loss is $\bar\ell$ and their average bytes/token is $R$, this becomes
 
 $$
-\operatorname{BPB}=\frac{\bar\ell}{R\ln2}.
+\mathrm{BPB}=\frac{\bar\ell}{R\ln2}.
 $$
 
 This normalizes the reporting unit. It does not make all evaluations identical: different tokenizers and packing policies can expose different text spans and context, and special-token likelihoods still participate in the model's vocabulary softmax. Comparing the same held-out text under controlled context and preprocessing remains important.
@@ -554,7 +554,7 @@ It does not save the exact position inside a tokenizer sub-batch or the outstand
 For document $d_j$, construct
 
 $$
-z^{(j)}=[\operatorname{BOS}]\Vert\tau(d_j).
+z^{(j)}=[\mathrm{BOS}]\Vert\tau(d_j).
 $$
 
 This is a variable-length list of IDs. The loader does not append a separate EOS token. Another document's BOS can mark a new document when lists are concatenated.

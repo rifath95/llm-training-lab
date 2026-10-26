@@ -105,7 +105,7 @@ $$
 H_t=\frac{\widehat M_t}{\sqrt{\widehat V_t}+\epsilon}.
 $$
 
-For a fresh first step with negligible epsilon, $H_{1,ij}\approx\operatorname{sign}(G_{1,ij})$. Later steps also depend on temporal consistency. This is coordinate adaptation, not the full inverse Hessian or a statistical variance calculation: $V$ is an uncentered second moment.
+For a fresh first step with negligible epsilon, $H_{1,ij}\approx\mathrm{sign}(G_{1,ij})$. Later steps also depend on temporal consistency. This is coordinate adaptation, not the full inverse Hessian or a statistical variance calculation: $V$ is an uncentered second moment.
 
 The source's `lerp_` is just an interpolation: `a.lerp_(b, w)` overwrites $a$ with $(1-w)a+wb$. Thus [these two calls](../nanochat/nanochat/optim.py#L51) implement exactly the moment recurrences.
 
@@ -156,7 +156,7 @@ B=U\Sigma V^\top,\qquad
 U\in\mathbb R^{m\times q},\quad V\in\mathbb R^{n\times q}.
 $$
 
-If $\Sigma=\operatorname{diag}(100,1)$, the update emphasizes one singular direction 100 times more strongly. The ideal polar-factor replacement is
+If $\Sigma=\mathrm{diag}(100,1)$, the update emphasizes one singular direction 100 times more strongly. The ideal polar-factor replacement is
 
 $$
 \boxed{Q=UV^\top},
@@ -195,7 +195,7 @@ $$
 \|B-Q\|_F^2=\|B\|_F^2+q-2\langle B,Q\rangle_F,
 $$
 
-where $\langle B,Q\rangle_F=\operatorname{tr}(B^\top Q)$. Minimizing distance is equivalent to maximizing this inner product; $Q=UV^\top$ attains $\sum_i\sigma_i(B)$.
+where $\langle B,Q\rangle_F=\mathrm{tr}(B^\top Q)$. Minimizing distance is equivalent to maximizing this inner product; $Q=UV^\top$ attains $\sum_i\sigma_i(B)$.
 
 There is also a local descent interpretation. Linearizing a loss gives
 
@@ -358,7 +358,7 @@ $$
 
 The target is the **root mean square of row norms**, not their arithmetic mean, despite the source comment's shorthand. For row norms 3 and 1, the common target is $\sqrt{(9+1)/2}=\sqrt5$, not 2.
 
-Row scaling changes the input geometry: in general $\operatorname{polar}(R)\ne\operatorname{polar}(B)$. It can rebalance scales, but is not guaranteed to reduce every matrix's condition number. Zero rows remain zero; clamped tiny rows do not exactly reach the target.
+Row scaling changes the input geometry: in general $\mathrm{polar}(R)\ne\mathrm{polar}(B)$. It can rebalance scales, but is not guaranteed to reduce every matrix's condition number. Zero rows remain zero; clamped tiny rows do not exactly reach the target.
 
 The source calls this MuonEq row equilibration. The cited [MuonEq work](https://arxiv.org/abs/2603.28254) studies preprocessing before finite orthogonalization. We use the local equations above as the specification of the variant actually present here.
 
@@ -390,7 +390,7 @@ For nonzero $Z$ above the clamp, this makes $\|Z\|_F=\sqrt q$ in exact arithmeti
 
 The source calls this “Muon+ renormalization” and cites [Muon+](https://arxiv.org/abs/2602.21545). That paper studies additional post-polar normalization; the scalar Frobenius correction here should not be identified with every row/column normalization variant in the paper. The local function defines the behavior we study.
 
-For a rank-deficient input, this step still targets $\sqrt q$ rather than $\sqrt{\operatorname{rank}(Z)}$. It scales existing nonzero directions more strongly and does not fill null directions. A completely zero matrix stays zero.
+For a rank-deficient input, this step still targets $\sqrt q$ rather than $\sqrt{\mathrm{rank}(Z)}$. It scales existing nonzero directions more strongly and does not fill null directions. A completely zero matrix stays zero.
 
 ### 6.2 A small second-moment buffer instead of Adam's full array
 
@@ -463,7 +463,7 @@ $$
 H=\sqrt{2/3}
 \begin{pmatrix}1&0\\0&1\\0&1\end{pmatrix},
 \qquad
-H^\top H=\operatorname{diag}(2/3,4/3).
+H^\top H=\mathrm{diag}(2/3,4/3).
 $$
 
 The norm is still $\sqrt2$, but the two singular values are different. That is compatible with the code's intended combination of matrix geometry and adaptive scales.
@@ -487,14 +487,14 @@ $$
 If $\|H\|_F\approx\sqrt{\min(m,n)}$, then
 
 $$
-\operatorname{RMS}(H)=\frac{\|H\|_F}{\sqrt{mn}}
+\mathrm{RMS}(H)=\frac{\|H\|_F}{\sqrt{mn}}
 \approx\frac1{\sqrt{\max(m,n)}},
 $$
 
 and hence
 
 $$
-\operatorname{RMS}(\eta_{eff}H)\approx\frac\eta{\sqrt n}.
+\mathrm{RMS}(\eta_{eff}H)\approx\frac\eta{\sqrt n}.
 $$
 
 For a transformer MLP up projection $(4d,d)$, the multiplier is 2. For its down projection $(d,4d)$, it is 1. This is a shape-based scale convention, not a theorem that these settings are optimal. Nanochat's [experiment reversing this heuristic](../nanochat/dev/LOG.md#L299) did not lead to adopting the reversed version.
@@ -621,18 +621,18 @@ AdamW and Muon use their own formulas in the middle, but the data movement has t
 For example, take two gradient matrices
 
 $$
-G^{(0)}=\operatorname{diag}(2,0.1),\qquad
-G^{(1)}=\operatorname{diag}(-1,0.1).
+G^{(0)}=\mathrm{diag}(2,0.1),\qquad
+G^{(1)}=\mathrm{diag}(-1,0.1).
 $$
 
-Their average is $\operatorname{diag}(0.5,0.1)$, whose exact polar factor is $I$. But the average of their polar factors is
+Their average is $\mathrm{diag}(0.5,0.1)$, whose exact polar factor is $I$. But the average of their polar factors is
 
 $$
-\tfrac12\left[I+\operatorname{diag}(-1,1)\right]
-=\operatorname{diag}(0,1).
+\tfrac12\left[I+\mathrm{diag}(-1,1)\right]
+=\mathrm{diag}(0,1).
 $$
 
-Thus $\operatorname{polar}(\operatorname{mean}G)\ne\operatorname{mean}(\operatorname{polar}G)$. Adam's adaptive denominator and persistent moment histories also require consistent global inputs. Assigning owners changes where the intended update is computed, not which local objective it represents.
+Thus $\mathrm{polar}(\mathrm{mean}G)\ne\mathrm{mean}(\mathrm{polar}G)$. Adam's adaptive denominator and persistent moment histories also require consistent global inputs. Assigning owners changes where the intended update is computed, not which local objective it represents.
 
 ## 11. How AdamW work is divided across ranks
 
@@ -878,7 +878,7 @@ Then try a rank-one input or a zero input. Distinguish “finite and norm-contro
 
 **Gist:** these checks isolate the reasons for the extra stages. They are more informative than asking only whether the loss decreases after one arbitrary toy update.
 
-1. For $B=\operatorname{diag}(100,1)$, compare the normalized-gradient direction $B/\|B\|_F$ with its ideal polar factor $I$. Which norm constraint produces each direction? Then apply row balancing and observe that it changes this particular example before the polar step.
+1. For $B=\mathrm{diag}(100,1)$, compare the normalized-gradient direction $B/\|B\|_F$ with its ideal polar factor $I$. Which norm constraint produces each direction? Then apply row balancing and observe that it changes this particular example before the polar step.
 2. Verify the nearest-semi-orthogonal argument by expanding $\|B-Q\|_F^2$ and identifying which terms are fixed.
 3. For a $(4,12)$ matrix, calculate the shape of $XX^\top$, the factored second moment, and the effective LR multiplier. Repeat for $(12,4)$; keep the row-balancing axis separate from the second-moment axis.
 4. Reproduce the $3\times2$ matrix in section 6.4. Verify both its original $Z^\top Z$ and the adapted $H^\top H$. Does preserving a Frobenius norm preserve orthogonality?
