@@ -731,7 +731,7 @@ The script requests `100 * 524288 = 52,428,800` validation target tokens, despit
 
 The scripts pipe training output through `tee` without enabling `pipefail`. They therefore do not reliably propagate every training-process failure through the pipeline status before parsing/appending results. The scaling sweep also skips runs already represented in its CSV. Check actual completion and recorded quantities before fitting a curve; a stale or incomplete row can otherwise persist.
 
-The default scaling script does not enable FP8. If adapting it to do so, also address the [FP8 FLOP-count mismatch](nanochat-pretraining.md#191-the-fp8-counting-issue-in-this-snapshot); a broken cost estimator invalidates an intended equal-compute comparison.
+The default scaling script does not enable FP8. If adapting it to do so, also address the [FP8 FLOP-count mismatch](03-nanochat-pretraining.md#191-the-fp8-counting-issue-in-this-snapshot); a broken cost estimator invalidates an intended equal-compute comparison.
 
 ### 16.3 Miniseries is not an isoFLOP sweep
 

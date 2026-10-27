@@ -14,7 +14,7 @@ The notation table below is a reference, not a prerequisite to memorize. Each ca
 
 The source snapshot is nanochat commit `92d63d4e8bb4df75c3b71618f31ddde2378b2bcd`. Exact line links refer to that checkout. Mathematical identities, approximate scaling arguments, empirical settings, and implementation discrepancies are identified separately.
 
-You can treat the [architecture note](nanochat-model-architecture.md) as defining the differentiable model and the [tokenization/data note](nanochat-tokenization-and-data.md) as defining its input distribution. This note connects them into a training process. The deeper matrix-optimizer derivation and communication implementation will belong in the optimization/distributed-training companion; precision kernels and hardware analysis will belong in the efficiency companion. Neither companion is required to follow the execution here.
+You can treat the [architecture note](01-nanochat-model-architecture.md) as defining the differentiable model and the [tokenization/data note](02-nanochat-tokenization-and-data.md) as defining its input distribution. This note connects them into a training process. The deeper matrix-optimizer derivation and communication implementation will belong in the optimization/distributed-training companion; precision kernels and hardware analysis will belong in the efficiency companion. Neither companion is required to follow the execution here.
 
 ## Contents
 

@@ -721,7 +721,7 @@ The training script requests the next batch after queuing each backward. CPU tok
 
 The source's MFU compares estimated model FLOPs/sec with a tabulated peak **BF16** throughput across ranks, including when FP8 linears are enabled. It excludes optimizer arithmetic from the model-FLOP estimate. It is not a direct hardware profiler or an FP8-peak utilization percentage.
 
-This snapshot also has the [FP8 counting discrepancy](nanochat-pretraining.md#191-the-fp8-counting-issue-in-this-snapshot): converted linears are omitted by the custom-`Linear` type-based count. That makes its post-conversion FLOP/MFU reporting, and FLOP-derived horizons, unreliable without correcting the count. Nominal matrix dimensions have not disappeared.
+This snapshot also has the [FP8 counting discrepancy](03-nanochat-pretraining.md#191-the-fp8-counting-issue-in-this-snapshot): converted linears are omitted by the custom-`Linear` type-based count. That makes its post-conversion FLOP/MFU reporting, and FLOP-derived horizons, unreliable without correcting the count. Nominal matrix dimensions have not disappeared.
 
 Evaluation, sampling, checkpoint writes, and setup are outside the per-update timed region. The cumulative reported training time also excludes update indices 0 through 10. End-to-end wall time is a different measurement. Allocated-memory peaks and allocator-reserved memory likewise answer different questions; the script reports CUDA `max_memory_allocated`, not every byte reserved by the process or driver.
 

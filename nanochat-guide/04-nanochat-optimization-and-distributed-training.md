@@ -1,6 +1,6 @@
 # Optimizing nanochat: AdamW, Muon, and distributed updates
 
-The [pretraining note](nanochat-pretraining.md) followed a complete training run but treated the optimizer mostly as a box: accumulated gradients went in, updated weights came out. This note opens that box. We will learn Muon from the beginning, derive the transformations in this checkout, and then follow the communication that lets several GPUs perform the same logical update.
+The [pretraining note](03-nanochat-pretraining.md) followed a complete training run but treated the optimizer mostly as a box: accumulated gradients went in, updated weights came out. This note opens that box. We will learn Muon from the beginning, derive the transformations in this checkout, and then follow the communication that lets several GPUs perform the same logical update.
 
 The source is nanochat commit `92d63d4e8bb4df75c3b71618f31ddde2378b2bcd`. Comparisons refer to your `transformer-from-scratch` at `56092a1818027c800f08167ec0c1c65b983711e1`. Precise line links refer to those checkouts. Neither repository needs to be modified to study the examples.
 
@@ -800,7 +800,7 @@ Optional FP8 linear conversion also does not convert these persistent parameter 
 
 The checkpoint system saves a model file plus one optimizer file per rank. AdamW's file contains full small-tensor histories and owned large-tensor row slices. Muon's file contains group chunk histories, including its ownership/padding layout.
 
-The source has no general optimizer-state resharding procedure for a new world size. Identical model weights alone do not specify how to migrate these histories. This is why “resume with more GPUs” is a separate implementation problem from “run the same model on more GPUs.” See [the pretraining checkpoint discussion](nanochat-pretraining.md#15-checkpoints-and-resuming) for the other saved and omitted state.
+The source has no general optimizer-state resharding procedure for a new world size. Identical model weights alone do not specify how to migrate these histories. This is why “resume with more GPUs” is a separate implementation problem from “run the same model on more GPUs.” See [the pretraining checkpoint discussion](03-nanochat-pretraining.md#15-checkpoints-and-resuming) for the other saved and omitted state.
 
 ## 15. Comparison with your implementation
 

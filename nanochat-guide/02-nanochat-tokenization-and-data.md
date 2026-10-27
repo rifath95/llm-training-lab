@@ -2,7 +2,7 @@
 
 This note follows the complete path from a hosted text corpus to the integer input/target tensors supplied to GPT. It explains the actual data sources, byte-level BPE, tokenizer fitting and encoding, vocabulary tradeoffs, document packing, and distributed reading.
 
-Code references are pinned conceptually to the local nanochat checkout at `92d63d4e8bb4df75c3b71618f31ddde2378b2bcd`. Hugging Face pages and upstream documentation were checked on **25 October 2026**. Their live metadata may change independently of this checkout. Python links include exact line fragments for VS Code, following the [architecture note](nanochat-model-architecture.md).
+Code references are pinned conceptually to the local nanochat checkout at `92d63d4e8bb4df75c3b71618f31ddde2378b2bcd`. Hugging Face pages and upstream documentation were checked on **25 October 2026**. Their live metadata may change independently of this checkout. Python links include exact line fragments for VS Code, following the [architecture note](01-nanochat-model-architecture.md).
 
 The model architecture begins with token IDs. This note explains where those IDs come from. Tokenizer fitting is a discrete statistics-based procedure, separate from gradient-based GPT training. Optimizers, training schedules, and post-training objectives are left for later notes.
 

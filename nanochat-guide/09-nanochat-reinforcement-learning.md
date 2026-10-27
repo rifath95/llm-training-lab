@@ -4,7 +4,7 @@ The SFT note explained how the model learns from supplied assistant responses. T
 
 The central idea is small. Sample several solutions to one question, subtract their mean reward, and use the resulting positive or negative weights on the sampled tokens' log probabilities. Understanding why that works requires separating the ideal policy-gradient derivation from this checkout's particular masks, normalization, and sampling settings.
 
-The source is nanochat commit `92d63d4e8bb4df75c3b71618f31ddde2378b2bcd`; comparisons use your `transformer-from-scratch` at `56092a1818027c800f08167ec0c1c65b983711e1`. Code links point to exact lines in these checkouts. The [SFT](nanochat-supervised-fine-tuning.md), [inference](nanochat-inference-and-generation.md), and [optimization](nanochat-optimization-and-distributed-training.md) notes supply the prerequisites.
+The source is nanochat commit `92d63d4e8bb4df75c3b71618f31ddde2378b2bcd`; comparisons use your `transformer-from-scratch` at `56092a1818027c800f08167ec0c1c65b983711e1`. Code links point to exact lines in these checkouts. The [SFT](08-nanochat-supervised-fine-tuning.md), [inference](07-nanochat-inference-and-generation.md), and [optimization](04-nanochat-optimization-and-distributed-training.md) notes supply the prerequisites.
 
 **How to skim:** every numbered section and subsection begins with a **Gist**. Sections 1–4 derive the learning signal and explain the reward. Sections 5–8 trace the actual rollouts, masks, loss, and gradients. Sections 9–11 explain sparse rewards, sampling-policy consistency, and the relationship to PPO/GRPO. Sections 12–15 cover updates, evaluation, checkpoints, and implementation boundaries. The final sections compare your code, offer small checks, and connect the full pipeline.
 
