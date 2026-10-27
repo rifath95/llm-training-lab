@@ -43,7 +43,7 @@ A base language model defines a distribution over token sequences:
 
 $$
 p_\theta(z_0,\ldots,z_{M-1})
-=\prod_{i=0}^{M-1}p_\theta(z_i\mid z_{<i}).
+=\prod_{i=0}^{M-1}p_\theta(z_i\mid z_{\lt i}).
 $$
 
 It can continue many kinds of text: an article, dialogue, code, a question, or an answer. Pretraining alone does not specify that, after a particular user message, it should give a useful answer in a designated assistant role and then stop.
@@ -52,7 +52,7 @@ SFT supplies examples of that behavior. For a simple prompt $x$ and demonstrated
 
 $$
 -\log p_\theta(y\mid x)
-=-\sum_{j=0}^{|y|-1}\log p_\theta(y_j\mid x,y_{<j}).
+=-\sum_{j=0}^{|y|-1}\log p_\theta(y_j\mid x,y_{\lt j}).
 $$
 
 The prompt is part of the conditioning information. Its own likelihood need not be optimized by this objective.
@@ -288,7 +288,7 @@ Y_t=\begin{cases}
 z_{t+1},&m_{t+1}=1,\\
 -1,&m_{t+1}=0,
 \end{cases}
-\qquad 0\leq t<T.
+\qquad 0\leq t\lt T.
 $$
 
 [The loader](../nanochat/scripts/chat_sft.py#L280) implements this with `batch[:, :-1]`, `batch[:, 1:]`, and `mask[:, 1:]`. GPT's cross-entropy uses `ignore_index=-1`.
@@ -496,7 +496,7 @@ The training example supplies the reference expression and reference result. Con
 For answer tokens $y_0,\ldots,y_{n-1}$ and end marker $e$, the response likelihood includes
 
 $$
-\left[\prod_{j=0}^{n-1}p_\theta(y_j\mid x,y_{<j})\right]
+\left[\prod_{j=0}^{n-1}p_\theta(y_j\mid x,y_{\lt j})\right]
 p_\theta(e\mid x,y_{0:n-1}).
 $$
 
@@ -665,7 +665,7 @@ For progress $p$, warmup fraction $w$, warmdown fraction $h$, and final LR fract
 $$
 \lambda(p)=
 \begin{cases}
-p/w,&p<w,\\
+p/w,&p\lt w,\\
 1,&w\leq p\leq1-h,\\
 1-(1-f)\dfrac{p-(1-h)}{h},&p>1-h.
 \end{cases}

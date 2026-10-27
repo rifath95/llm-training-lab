@@ -217,7 +217,7 @@ Actual Muon uses momentum, input balancing, a finite polynomial, and subsequent 
 
 **Gist:** the polar ideal requires care when the input is rank deficient. A polynomial can amplify small nonzero singular directions, but cannot invent directions corresponding to exactly zero singular values.
 
-If $B$ has rank $r<q$, its canonical partial polar factor is $U_rV_r^\top$ and has rank $r$. A nearest fully semi-orthogonal matrix can complete the missing directions, but the completion is nonunique. The polynomial in the source contains no such completion: an exact zero singular value remains zero in exact arithmetic.
+If $B$ has rank $r\lt q$, its canonical partial polar factor is $U_rV_r^\top$ and has rank $r$. A nearest fully semi-orthogonal matrix can complete the missing directions, but the completion is nonunique. The polynomial in the source contains no such completion: an exact zero singular value remains zero in exact arithmetic.
 
 Thus statements such as “all singular values become one” assume a full-rank ideal input and sufficiently accurate evaluation. A five-step computation need not closely resolve extremely small nonzero singular values either. The later norm correction rescales what is present; it does not restore missing rank.
 
@@ -401,7 +401,7 @@ The ownership code chooses the [reduction dimension](../nanochat/nanochat/optim.
 | Weight shape | Squared-magnitude statistic | Stored buffer shape | `red_dim` |
 | --- | --- | --- | --- |
 | $m\ge n$ | $s_i=\frac1n\sum_j Z_{ij}^2$ per row | $(m,1)$ | −1 |
-| $m<n$ | $s_j=\frac1m\sum_i Z_{ij}^2$ per column | $(1,n)$ | −2 |
+| $m\lt n$ | $s_j=\frac1m\sum_i Z_{ij}^2$ per column | $(1,n)$ | −2 |
 
 The leading stack dimension is omitted here; each owned matrix has its own statistics. Square matrices take the row-statistic branch, even though the polar loop's square case uses $XX^\top$.
 
@@ -514,7 +514,7 @@ c_{ij}=\mathbf1[H_{ij}P_{ij}\ge0],
 -\eta_{eff}\left(H_{ij}+\lambda P_{ij}c_{ij}\right)}.
 $$
 
-If $P_{ij}>0$ and $H_{ij}>0$, subtracting $H_{ij}$ points toward zero and decay also acts. If $P_{ij}<0$ and $H_{ij}>0$, subtracting $H_{ij}$ points away from zero and decay is suppressed. The analogous cases hold for negative $H$.
+If $P_{ij}>0$ and $H_{ij}>0$, subtracting $H_{ij}$ points toward zero and decay also acts. If $P_{ij}\lt 0$ and $H_{ij}>0$, subtracting $H_{ij}$ points away from zero and decay is suppressed. The analogous cases hold for negative $H$.
 
 For $P=[2,-2]$, $H=[1,1]$, $\eta_{eff}=0.1$, and $\lambda=0.2$, the mask is $[1,0]$ and
 
@@ -710,7 +710,7 @@ For $J=5$ matrices and $W=3$, $c=2$ and $J_{pad}=6$:
 
 Every real owned gradient already averages contributions from all three ranks. It is not just the owner's local gradient.
 
-The caller computes `num_owned` and invokes the fused kernel only for actual matrices. State buffers include $c$ slots, but padded slots do not drive a real parameter update. When $J<W$, some ranks can own no real matrix in that group and still participate in communication.
+The caller computes `num_owned` and invokes the fused kernel only for actual matrices. State buffers include $c$ slots, but padded slots do not drive a real parameter update. When $J\lt W$, some ranks can own no real matrix in that group and still participate in communication.
 
 ### 12.3 Owner histories and reconstruction
 

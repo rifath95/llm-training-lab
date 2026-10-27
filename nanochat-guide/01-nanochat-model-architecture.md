@@ -226,12 +226,7 @@ Initialization sets $\lambda_s=0$, so smear initially contributes zero. The exac
 
 **Code:** [initial-stream reinjection and block loop](../nanochat/nanochat/gpt.py#L494) and [Block.forward](../nanochat/nanochat/gpt.py#L150).
 
-Each block has learned scalars
-
-$$
-\alpha_\ell=\texttt{resid\_lambdas}[\ell],\qquad
-\beta_\ell=\texttt{x0\_lambdas}[\ell].
-$$
+Each block has learned scalars $\alpha_\ell$ and $\beta_\ell$, stored in `resid_lambdas[ell]` and `x0_lambdas[ell]`, respectively.
 
 Start the block by forming
 
@@ -482,7 +477,7 @@ $$
 
 This includes the current position and up to $w_\ell$ predecessors: at most $w_\ell+1$ keys.
 
-With $S=\texttt{sequence\_len}$, the exact code gives
+With configured sequence length $S$ (`sequence_len`), the exact code gives
 
 $$
 w_{long}=S,\qquad
@@ -658,7 +653,7 @@ $$
 u=N_d(\widetilde h),
 $$
 
-where $\gamma=\texttt{backout\_lambda}$ is one learned scalar, initialized to 0.2. For $L=12$, the saved tensor is after the seventh block. For $L=1$, it is the final block output itself.
+where $\gamma$ (`backout_lambda`) is one learned scalar, initialized to 0.2. For $L=12$, the saved tensor is after the seventh block. For $L=1$, it is the final block output itself.
 
 The code's stated motivation is removing low-level features that persist in the residual stream. A precise algebraic interpretation is subtraction of an earlier representation before the output classifier. In the simplified special case $h^{(L)}=b_{mid}+\Delta$, this becomes $(1-\gamma)b_{mid}+\Delta$; the actual learned residual/input mixing makes the general decomposition more involved.
 
@@ -720,7 +715,7 @@ $$
 Final RMSNorm controls $\|u\|_2$, but the learned row norm $\|w_v\|_2$ can grow. Softcapping adds a direct bound:
 
 $$
-|\bar Z_v|<15,
+|\bar Z_v|\lt 15,
 \qquad
 \frac{d\bar Z_v}{dZ_v}=\mathrm{sech}^2(Z_v/15).
 $$

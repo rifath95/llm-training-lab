@@ -261,7 +261,7 @@ For candidate $j$ with scored span length $L_j=e_j-s_j$,
 
 $$
 S_j=\frac1{L_j}\sum_{t=s_j}^{e_j-1}
--\ln p_\theta(x_t^{(j)}\mid x_{<t}^{(j)}),
+-\ln p_\theta(x_t^{(j)}\mid x_{\lt t}^{(j)}),
 \qquad \widehat j=\arg\min_j S_j.
 $$
 
@@ -285,7 +285,7 @@ The condition is
 $$
 C=\prod_{t=s}^{e-1}
 \mathbf1\!\left[
-x_t=\arg\max_v p_\theta(v\mid x_{<t})\right].
+x_t=\arg\max_v p_\theta(v\mid x_{\lt t})\right].
 $$
 
 It is computed under teacher forcing in one forward. If all predictions match, a greedy autoregressive rollout from the same prefix also follows this continuation for its specified length, by induction. The check does not separately assess stopping behavior, alternative correct wordings, or stochastic generation.
@@ -641,14 +641,14 @@ Keeping compute fixed while increasing size should generally move data allocatio
 Suppose the estimated optima follow
 
 $$
-N_*(C)=A C^{\gamma_N},\qquad
-D_*(C)=B C^{\gamma_D}.
+N_{\star}(C)=A C^{\gamma_N},\qquad
+D_{\star}(C)=B C^{\gamma_D}.
 $$
 
 Then
 
 $$
-\frac{D_*}{N_*}=\frac BA C^{\gamma_D-\gamma_N}.
+\frac{D_{\star}}{N_{\star}}=\frac BA C^{\gamma_D-\gamma_N}.
 $$
 
 If the exponents are approximately equal, the ratio varies slowly with compute. This connects to the pretraining rule $D\approx\rho N_s$. Changing the parameter-count convention changes the numerical ratio and possibly the apparent fitted relationship; it does not change the loss achieved by an already completed run.
@@ -682,13 +682,13 @@ $$
 If $a>0$, the derivative vanishes at
 
 $$
-x_*=-\frac b{2a},\qquad N_*=10^{x_*},\qquad
-\widehat L_*=c-\frac{b^2}{4a}.
+x_{\star}=-\frac b{2a},\qquad N_{\star}=10^{x_{\star}},\qquad
+\widehat L_{\star}=c-\frac{b^2}{4a}.
 $$
 
 If $a\le0$, the notebook falls back to the best observed row. If $a>0$, it accepts the vertex even when outside the sampled range; a convex extrapolated minimum is not the same evidence as an observed interior valley. A nearly flat curvature also makes the estimated location sensitive to small loss perturbations.
 
-The notebook then uses `np.interp` in log-size to obtain tokens and token/parameter ratios from the measured runs. Outside the observed range, that interpolation clamps to endpoint values, even though the quadratic vertex may be outside. Moreover, independently interpolating $D$ and $D/N$ does not guarantee that the resulting ratio equals the interpolated $D$ divided by fitted $N_*$. Check that consistency before interpreting a precise preferred ratio.
+The notebook then uses `np.interp` in log-size to obtain tokens and token/parameter ratios from the measured runs. Outside the observed range, that interpolation clamps to endpoint values, even though the quadratic vertex may be outside. Moreover, independently interpolating $D$ and $D/N$ does not guarantee that the resulting ratio equals the interpolated $D$ divided by fitted $N_{\star}$. Check that consistency before interpreting a precise preferred ratio.
 
 ### 15.3 Fit the scaling exponents and retain their uncertainty
 
@@ -697,8 +697,8 @@ The notebook then uses `np.interp` in log-size to obtain tokens and token/parame
 The second fit is
 
 $$
-\log_{10}N_* = u_N+\gamma_N\log_{10}C,\qquad
-\log_{10}D_* = u_D+\gamma_D\log_{10}C.
+\log_{10}N_{\star} = u_N+\gamma_N\log_{10}C,\qquad
+\log_{10}D_{\star} = u_D+\gamma_D\log_{10}C.
 $$
 
 Exponentiating gives the power laws in section 14. The notebook reports their difference, evaluates the fitted ratio at the geometric mean of the smallest/largest compute budgets, and also prints the mean/spread of interpolated per-budget ratios.
@@ -785,7 +785,7 @@ Then explain which candidate nanochat's MC rule chooses and why that differs fro
 
 Suppose you want to test whether FP8 reaches the same validation BPB faster. Specify the checkpoint initialization, data/tokenizer, model configuration, global batch, optimizer/schedules, evaluation subset, ordinary evaluation dtype, and primary time-to-target metric. Identify the source's FLOP-count issue before using FLOPs as an alternative axis.
 
-For a scaling exercise, fit the three invented points in section 14 with a quadratic in $\log_{10}N$. The symmetric valley should give $N_*=200$ million. Why do three points with a perfect quadratic fit not establish that the quadratic is the right loss surface? What extra observation would test the inferred optimum rather than just restating the fit?
+For a scaling exercise, fit the three invented points in section 14 with a quadratic in $\log_{10}N$. The symmetric valley should give $N_{\star}=200$ million. Why do three points with a perfect quadratic fit not establish that the quadratic is the right loss surface? What extra observation would test the inferred optimum rather than just restating the fit?
 
 ## 18. Checks performed and what comes next
 

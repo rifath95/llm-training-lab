@@ -65,7 +65,7 @@ For prompt $x_{0:P-1}$ and response $y_{0:R-1}$, ordinary model continuation pro
 
 $$
 p_\theta(y_{0:R-1}\mid x)
-=\prod_{j=0}^{R-1}p_\theta(y_j\mid x,y_{<j}).
+=\prod_{j=0}^{R-1}p_\theta(y_j\mid x,y_{\lt j}).
 $$
 
 The engine may sample from a temperature/top-k-modified distribution instead of exactly $p_\theta$, and forced tool outputs are not sampled from it. We will formalize that policy distinction in sections 8 and 11.

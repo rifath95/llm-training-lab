@@ -82,7 +82,7 @@ If one step processes $G$ tokens and the run performs $K$ steps, it processes $K
 | $N_s$ | Parameters used for the scaling heuristic | `num_scaling_params` |
 | $N_{mat}$ | Parameters counted in token-stream matrix products | `num_matmul_params()` |
 | $P$ | Total learned parameters | `num_params` |
-| $D_*$ | Target training-token budget used by automatic scaling | `target_tokens` |
+| $D_{\star}$ | Target training-token budget used by automatic scaling | `target_tokens` |
 | $D_{run}=KG$ | Planned processed target positions | `total_tokens` |
 | $\Phi$ | Estimated forward-plus-backward FLOPs per token | `num_flops_per_token` |
 
@@ -396,10 +396,10 @@ If the exponents are equal, both grow as $\sqrt C$, giving a constant optimal $D
 Rather than fitting that loss surface for every run, nanochat uses a simple rule: **choose a tuned number of training tokens per scaling parameter**. Write that ratio as $\rho$ (“rho”). For scaling parameter count $N_s$, it sets
 
 $$
-D_*=\lfloor\rho N_s\rfloor.
+D_{\star}=\lfloor\rho N_s\rfloor.
 $$
 
-Here $D_*$ is the desired number of processed training tokens; the floor just makes it an integer. At $N_s\approx110$ million and $\rho=12$, the target is approximately 1.32 billion tokens.
+Here $D_{\star}$ is the desired number of processed training tokens; the floor just makes it an integer. At $N_s\approx110$ million and $\rho=12$, the target is approximately 1.32 billion tokens.
 
 **How is $\rho$ chosen?** Run several model sizes at a fixed compute budget, allocating each its affordable number of tokens. Fit or compare their validation losses, identify the best model/token allocation, and calculate $D/N_s$ there. Repeat across budgets. Karpathy's recorded experiments using this count gave ratios around 10–11 over the tested budgets. The CLI defaults to 12; these experiments motivate the range, but do not mathematically single out exactly 12. The current reference speedrun uses 8 to reach its benchmark goal quickly. These are empirical settings for particular objectives, not a limit beyond which more data stops helping.
 
@@ -423,9 +423,9 @@ The script supports three ways to choose $K$. It uses the first enabled option:
 | --- | --- | --- |
 | 1 | `--num-iterations=K` | Explicit positive $K$ |
 | 2 | `--target-flops=C` | $K=\mathrm{round}(C/(\Phi G))$ |
-| 3 | `--target-param-data-ratio=rho` | $K=\lfloor D_*/G\rfloor$ |
+| 3 | `--target-param-data-ratio=rho` | $K=\lfloor D_{\star}/G\rfloor$ |
 
-The FLOP-budget formula divides total available FLOPs $C$ by FLOPs per step $\Phi G$. The token-budget formula divides desired tokens $D_*$ by tokens per step $G$. Both are unit conversions from a budget into a step count.
+The FLOP-budget formula divides total available FLOPs $C$ by FLOPs per step $\Phi G$. The token-budget formula divides desired tokens $D_{\star}$ by tokens per step $G$. Both are unit conversions from a budget into a step count.
 
 The actual planned token count is always
 
@@ -437,7 +437,7 @@ The ratio route rounds down to a whole global batch; the FLOP route rounds the n
 
 For a concrete rounding example, a target of 10.5 million tokens with $G=1$ million gives $K=10$, hence $D_{run}=10$ million. The code cannot process half of its configured global batch as a final partial step.
 
-An explicit iteration or FLOP budget overrides $K$, but it does not cause the earlier automatic batch/decay heuristics to be recomputed from the resulting $D_{run}$. Those heuristics still use the ratio-based estimate $D_*$. Thus $D_*$ is the budget used to suggest settings, while $D_{run}$ is what the resolved step count actually schedules.
+An explicit iteration or FLOP budget overrides $K$, but it does not cause the earlier automatic batch/decay heuristics to be recomputed from the resulting $D_{run}$. Those heuristics still use the ratio-based estimate $D_{\star}$. Thus $D_{\star}$ is the budget used to suggest settings, while $D_{run}$ is what the resolved step count actually schedules.
 
 ### 6.4 Compute budget and wall-clock objective differ
 
@@ -586,7 +586,7 @@ G_{ref}=2^{19}=524288,\qquad
 D_{ref}=\rho N_{s,ref}.
 $$
 
-The target model has scaling parameter count $N_s$ and target budget $D_*=\rho N_s$. A subscript `ref` means “the reference value”; a ratio such as $D_*/D_{ref}$ tells us how many times larger the target budget is.
+The target model has scaling parameter count $N_s$ and target budget $D_{\star}=\rho N_s$. A subscript `ref` means “the reference value”; a ratio such as $D_{\star}/D_{ref}$ tells us how many times larger the target budget is.
 
 Here **training horizon** means the planned number of processed training tokens. It does not mean sequence length, model context, or one traversal of the dataset. We will use “token budget” below to keep that meaning explicit.
 
@@ -601,7 +601,7 @@ A larger batch lets you process more tokens before synchronizing/updating, which
 Nanochat's rule is: **as the token budget grows, increase the global batch, but more slowly than the budget**. It predicts
 
 $$
-G_{pred}=G_{ref}\left(\frac{D_*}{D_{ref}}\right)^{0.383},
+G_{pred}=G_{ref}\left(\frac{D_{\star}}{D_{ref}}\right)^{0.383},
 $$
 
 then rounds to a nearby power of two:
@@ -620,7 +620,7 @@ which rounds to $G=2G_{ref}=1{,}048{,}576$ tokens per step. Four times the token
 
 Why 0.383? It is a fitted exponent from the batch-scaling work cited by the source, [Power Lines](https://arxiv.org/abs/2505.13738), which reports this exponent for a tuned setting. It is not derived from the loss or a universal theorem about all corpora and optimizers. An explicit `--total-batch-size` bypasses the prediction.
 
-With the same positive $\rho$ for target and reference, $D_*/D_{ref}$ is approximately $N_s/N_{s,ref}$. The ratio cancels; changing $\rho$ alone therefore does not generally increase this script's automatic batch. Rounding can introduce small integer effects.
+With the same positive $\rho$ for target and reference, $D_{\star}/D_{ref}$ is approximately $N_s/N_{s,ref}$. The ratio cancels; changing $\rho$ alone therefore does not generally increase this script's automatic batch. Rounding can introduce small integer effects.
 
 ### 8.3 Adjust learning-rate inputs for the chosen batch
 
@@ -697,11 +697,11 @@ $$
 \frac{D_{ref}}D.
 $$
 
-Insert the square-root batch LR rule, $\eta/\eta_{ref}=\sqrt{G/G_{ref}}$, and use nanochat's budget estimate $D=D_*$:
+Insert the square-root batch LR rule, $\eta/\eta_{ref}=\sqrt{G/G_{ref}}$, and use nanochat's budget estimate $D=D_{\star}$:
 
 $$
 \boxed{\lambda_0=\lambda_{arg}\sqrt{G/G_{ref}}
-\frac{D_{ref}}{D_*}}.
+\frac{D_{ref}}{D_{\star}}}.
 $$
 
 Here $\lambda_{arg}$ is the CLI's reference decay input (default 0.28), while $\lambda_0$ is the resulting base coefficient for the target's Muon groups. In our example,
@@ -734,7 +734,7 @@ $$
 
 Keeping this fraction constant is equivalent to keeping the accumulated-shrinkage quantity constant. The source calls it an epoch timescale, but the normalizing token budget here need not equal one traversal of the downloaded corpus.
 
-The actual script applies the transfer to Muon's matrix decay. Muon's cautious, coordinate-dependent decay and varying LR/decay schedules do not exactly follow the simple recurrence above. The derivation motivates the setting; it is not an exact invariance theorem for the real optimizer. It also uses $D_*$, not necessarily the actual budget $D_{run}$ after an explicit iteration/FLOP override.
+The actual script applies the transfer to Muon's matrix decay. Muon's cautious, coordinate-dependent decay and varying LR/decay schedules do not exactly follow the simple recurrence above. The derivation motivates the setting; it is not an exact invariance theorem for the real optimizer. It also uses $D_{\star}$, not necessarily the actual budget $D_{run}$ after an explicit iteration/FLOP override.
 
 ### 8.6 Put the adjustments together
 
@@ -826,7 +826,7 @@ Let $U$ be the number of warmup steps (`warmup_steps`), $r$ the fraction of the 
 $$
 f(s)=
 \begin{cases}
-(s+1)/U,&s<U,\\
+(s+1)/U,&s\lt U,\\
 1,&s\ge U\text{ and }s\le K-Q,\\
 f_{min}+(1-f_{min})(K-s)/Q,&\text{otherwise}.
 \end{cases}
@@ -866,7 +866,7 @@ Let $S_{down}=K-Q$ be the step where warmdown begins. The source's actual branch
 $$
 \mu(s)=
 \begin{cases}
-0.85+(0.97-0.85)s/400,&s<400,\\
+0.85+(0.97-0.85)s/400,&s\lt 400,\\
 0.97+(0.90-0.97)(s-S_{down})/Q,
 &s\ge400\text{ and }s\ge S_{down},\\
 0.97,&\text{otherwise}.
@@ -875,7 +875,7 @@ $$
 
 Momentum initially rises over a fixed 400 update indices; later it falls during LR warmdown. This schedule affects Muon groups, not the AdamW betas listed above.
 
-The order of conditions matters for short runs. If $S_{down}<400$, the first branch takes precedence until index 400, potentially producing a jump when the warmdown branch first becomes active. A run shorter than 400 iterations never leaves the first momentum branch.
+The order of conditions matters for short runs. If $S_{down}\lt 400$, the first branch takes precedence until index 400, potentially producing a jump when the warmdown branch first becomes active. A run shorter than 400 iterations never leaves the first momentum branch.
 
 ### 10.3 Muon weight-decay schedule
 
@@ -1235,9 +1235,9 @@ The real speedrun enables FP8. First calculate the ordinary model's parameter an
 | Unconverted matrix-product count $N_{mat}$ | 729,810,648 |
 | d12 reference scaling parameters $N_{s,ref}$ | 110,100,912 |
 | Reference horizon at the same $\rho$ | 880,807,296 tokens |
-| Target horizon $D_*=8N_s$ | 5,838,484,992 tokens |
+| Target horizon $D_{\star}=8N_s$ | 5,838,484,992 tokens |
 | Rounded automatic global batch $G$ | 1,048,576 tokens |
-| Iterations $K=\lfloor D_*/G\rfloor$ | 5,568 |
+| Iterations $K=\lfloor D_{\star}/G\rfloor$ | 5,568 |
 | Planned processed tokens $D_{run}=KG$ | 5,838,471,168 |
 | Local microbatch targets $bT$ | 32,768 |
 | Global targets per accumulation round $WbT$ | 262,144 |
@@ -1252,7 +1252,7 @@ K=\left\lfloor\frac{5{,}838{,}484{,}992}{1{,}048{,}576}\right\rfloor
 A=\frac{1{,}048{,}576}{8\times16\times2048}=4.
 $$
 
-Each of the eight GPUs processes four local microbatches, then the optimizer updates once; this repeats for 5568 steps. The rounding loses only 13,824 target positions relative to $D_*$. The “8 tokens per parameter” label refers to $N_s$, whereas dividing by all 1.384B parameters gives a different ratio. Neither ratio is the corpus's total available token count.
+Each of the eight GPUs processes four local microbatches, then the optimizer updates once; this repeats for 5568 steps. The rounding loses only 13,824 target positions relative to $D_{\star}$. The “8 tokens per parameter” label refers to $N_s$, whereas dividing by all 1.384B parameters gives a different ratio. Neither ratio is the corpus's total available token count.
 
 ### 16.2 Hyperparameters
 

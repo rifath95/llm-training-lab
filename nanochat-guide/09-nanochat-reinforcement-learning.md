@@ -387,7 +387,7 @@ Y_{i,t}=\begin{cases}
 z_{i,t+1},&m_{i,t+1}=1,\\
 -1,&m_{i,t+1}=0,
 \end{cases}
-\quad 0\leq t<M-1.
+\quad 0\leq t\lt M-1.
 $$
 
 The mask is shifted with the targets, exactly as in SFT. Thus the assistant-start input predicts the first sampled response token. An externally forced result remains visible as context but has no local policy log-probability term.
@@ -532,7 +532,7 @@ $$
 =\frac{A}{C}\left(\pi_v-\mathbf1[v=y]\right).
 $$
 
-For plain gradient descent on these logits, $A>0$ increases the sampled token's relative preference and $A<0$ decreases it. If $A=0$, there is no local policy-gradient contribution.
+For plain gradient descent on these logits, $A>0$ increases the sampled token's relative preference and $A\lt 0$ decreases it. If $A=0$, there is no local policy-gradient contribution.
 
 If $u_v$ is the raw head logit and $s_v=15\tanh(u_v/15)$, multiply this derivative by $1-\tanh^2(u_v/15)$ for the derivative with respect to $u_v$.
 
@@ -763,8 +763,10 @@ There is no separate RL Muon-momentum ramp in this script; fresh groups use the 
 
 $$
 K=\left\lfloor\frac{N_{\mathrm{train}}}{Q}\right\rfloor
-\cdot\texttt{num\_epochs}.
+\cdot n_{\mathrm{epochs}}.
 $$
+
+Here $n_{\mathrm{epochs}}$ is the requested `num_epochs`.
 
 For 7473 GSM8K training rows, $Q=16$, and one epoch, $K=467$. That accounts for 7472 question slots, with floor rounding rather than a final partial question batch. Actual data comes from rank-strided, cyclic views of a fixed shuffled task; it is not reshuffled by this loop at every epoch boundary.
 
@@ -907,7 +909,7 @@ $$
 
 For $S=17,b=8$, sixteen are generated. The later divisibility assertion on the returned tensor succeeds because that tensor already has sixteen rows. The printed nominal sequence count still uses the requested $S$.
 
-For $S<b$, zero calls are made, and taking the maximum sequence length of an empty list fails. Setting `num_samples=1` with the default device batch size is therefore not a working one-candidate ablation. Even with $b=1$, its group-centered advantages would all be zero.
+For $S\lt b$, zero calls are made, and taking the maximum sequence length of an empty list fails. Setting `num_samples=1` with the default device batch size is therefore not a working one-candidate ablation. Even with $b=1$, its group-centered advantages would all be zero.
 
 Default $S=16,b=8$ is compatible. The mathematical group-size formulas should use the actual $S'$ when interpreting other accepted settings.
 
