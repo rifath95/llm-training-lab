@@ -6,7 +6,7 @@ The architecture and next-token cross-entropy are familiar. The new ideas are th
 
 The source is nanochat commit `92d63d4e8bb4df75c3b71618f31ddde2378b2bcd`; comparisons use your `transformer-from-scratch` at `56092a1818027c800f08167ec0c1c65b983711e1`. Links point to exact lines in those local checkouts. External dataset pages describe their published contents; the task loader does not pin a dataset revision.
 
-The main prerequisites are the [pretraining](03-nanochat-pretraining.md), [optimization](04-nanochat-optimization-and-distributed-training.md), and [inference](07-nanochat-inference-and-generation.md) notes. We reuse their model and optimizer mathematics rather than deriving the transformer or Muon again.
+The conceptual prerequisite is the [pretraining](03-nanochat-pretraining.md) note: conditional likelihood, target shifting, and gradient accumulation. The [optimization](04-nanochat-optimization-and-distributed-training.md) and [inference](07-nanochat-inference-and-generation.md) notes are helpful references for optimizer state and generated tool interactions; you can treat those mechanisms as boxes while learning SFT's central objective and loss masks.
 
 **How to skim:** every numbered section and subsection starts with a **Gist**. Sections 1–7 explain the learning problem, data, masks, and tools. Sections 8–12 follow packing, initialization, updates, evaluation, and saved artifacts. Section 13 compares your implementation. Section 14 groups implementation caveats, so they do not obscure the central SFT ideas. Sections 15–16 offer small checks and connect this stage to RL.
 

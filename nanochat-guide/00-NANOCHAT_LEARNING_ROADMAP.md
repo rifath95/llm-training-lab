@@ -112,7 +112,12 @@ Possible supplementary topics include upstream corpus curation/deduplication/dec
 
 ## Chapter prerequisites
 
-Read the diagram **from top to bottom**. A solid arrow means the upper chapter supplies a main prerequisite for the lower one. When several solid arrows enter a chapter, follow all those branches; their earlier prerequisites carry forward too. Dashed arrows mark useful background that can be consulted as needed.
+The arrows distinguish **conceptual prerequisites** from **helpful implementation background**, assuming your existing mathematics, PyTorch, transformer, and basic gradient-descent knowledge.
+
+- **Solid arrow A → B:** understand A's relevant core ideas before studying B. You do not need to master every implementation detail in A.
+- **Dotted arrow A ⇢ B:** A helps explain particular details in B, but you can start B without reading A first. Treat those mechanisms as a box and return to them later.
+
+Read the arrows from top to bottom. When several solid arrows enter a chapter, their prerequisites combine. **Only solid-arrow paths establish prerequisites**; a chapter merely appearing higher in the diagram does not make it required. Dotted arrows do not add prerequisites, even when they point into an otherwise required chapter.
 
 ```mermaid
 flowchart TD
@@ -128,23 +133,42 @@ flowchart TD
 
     C1 --> C3
     C2 --> C3
-    C3 --> C4
-    C4 --> C5
+    C1 --> C5
     C3 --> C6
-
     C1 --> C7
-    C2 --> C7
-    C5 -. memory and precision .-> C7
-    C5 -. compute and scaling .-> C6
-
-    C4 --> C8
-    C7 --> C8
-    C6 -. validation metrics .-> C8
-
+    C3 --> C8
+    C7 --> C9
     C8 --> C9
-    C6 --> C9
+
+    C3 -.-> C4
+    C3 -.-> C5
+    C4 -.-> C5
+    C2 -.-> C7
+    C5 -.-> C7
+    C5 -.-> C6
+    C4 -.-> C8
+    C6 -.-> C8
+    C7 -.-> C8
+    C4 -.-> C9
+    C6 -.-> C9
 ```
 
-For example, **chapter 09** builds on **08** for assistant training and loss masks, and **06** for rewards and evaluation. Through chapter 08, it also inherits **07** for rollout generation and **04** for optimizer updates, together with their foundations in **01–03**.
+The direct conceptual prerequisites are:
 
-Chapters **01 and 02** can be read independently. After **03**, the optimizer and evaluation branches can be studied separately. Chapter **05** deepens the systems picture and helps with inference memory and scaling costs, but its kernel and precision details need not block a first pass through post-training.
+| Chapter | Understand first |
+| --- | --- |
+| **01 · Architecture** | No earlier chapter |
+| **02 · Tokenization and data** | No earlier chapter; the token-ID/target-shifting basics matter more for later chapters than the BPE details |
+| **03 · Pretraining** | **01 + 02:** next-token model, inputs, targets, and data |
+| **04 · Optimization and distribution** | No earlier chapter required with your background in gradients and training; **03** supplies context for the training loop |
+| **05 · Efficiency and precision** | **01:** attention and forward/backward tensor computations |
+| **06 · Evaluation and scaling** | **03:** likelihood loss, training budgets, and parameter/token counts |
+| **07 · Inference** | **01:** causal attention, RoPE, and the forward pass |
+| **08 · SFT** | **03:** conditional likelihood, target shifting, and gradient accumulation |
+| **09 · RL** | **07 + 08:** sampling/actions/tool observations, masked log probabilities, and the SFT starting point |
+
+For **SFT**, chapter **04** helps with optimizer groups and state restoration, **06** with validation metrics, and **07** with the behavior that tool demonstrations teach. None is needed to understand SFT's central objective and loss mask.
+
+For **RL**, the relevant parts of **07** are autoregressive sampling, temperature/top-k, and sampled-versus-forced token masks; the detailed KV-cache implementation is not a prerequisite for deriving policy gradients. Chapters **04** and **06** help with the update machinery and measurement, but the RL chapter explains rewards and advantages itself.
+
+A short route to the post-training concepts is **01 + 02 → 03 → 08**, plus the sampling/tool sections of **07**, then **09**. Study **04–06** when you want to understand the optimizer, execution costs, and experimental measurement more deeply. The numbered order remains a useful complete reading order, rather than a requirement to finish every preceding chapter before moving on.
